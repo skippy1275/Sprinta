@@ -1,0 +1,4627 @@
+﻿package za.co.sprinta.app.ads
+
+import android.app.Activity
+import android.content.Context
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.interstitial.InterstitialAd
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
+import com.google.android.ump.UserMessagingPlatform
+
+object AdManager {
+    const val BANNER_AD_UNIT_ID = "ca-app-pub-5833611172742289/3073358578"
+    const val INTERSTITIAL_AD_UNIT_ID = "ca-app-pub-5833611172742289/4286365295"
+
+    private var interstitialAd: InterstitialAd? = null
+    private var isInitializing = false
+
+    fun gatherConsentAndInitialize(activity: Activity) {
+        if (isInitializing) return
+        isInitializing = true
+
+        val consentInformation = UserMessagingPlatform.getConsentInformation(activity)
+        val params = com.google.android.ump.ConsentRequestParameters.Builder().build()
+
+        consentInformation.requestConsentInfoUpdate(
+            activity,
+            params,
+            {
+                UserMessagingPlatform.loadAndShowConsentFormIfRequired(activity) { _ ->
+                    initMobileAds(activity.applicationContext)
+                }
+            },
+            { _ ->
+                initMobileAds(activity.applicationContext)
+            }
+        )
+    }
+
+    private fun initMobileAds(context: Context) {
+        MobileAds.initialize(context) {
+            preloadInterstitial(context)
+        }
+    }
+
+    fun preloadInterstitial(context: Context) {
+        val adRequest = AdRequest.Builder().build()
+        InterstitialAd.load(
+            context,
+            INTERSTITIAL_AD_UNIT_ID,
+            adRequest,
+            object : InterstitialAdLoadCallback() {
+                override fun onAdLoaded(ad: InterstitialAd) {
+                    interstitialAd = ad
+                }
+
+                override fun onAdFailedToLoad(error: LoadAdError) {
+                    interstitialAd = null
+                }
+            }
+        )
+    }
+
+    fun showInterstitialIfReady(activity: Activity, onAdDismissed: () -> Unit) {
+        val ad = interstitialAd
+        if (ad != null) {
+            ad.fullScreenContentCallback = object : com.google.android.gms.ads.FullScreenContentCallback() {
+                override fun onAdDismissedFullScreenContent() {
+                    interstitialAd = null
+                    preloadInterstitial(activity.applicationContext)
+                    onAdDismissed()
+                }
+
+                override fun onAdFailedToShowFullScreenContent(p0: com.google.android.gms.ads.AdError) {
+                    interstitialAd = null
+                    onAdDismissed()
+                }
+            }
+            ad.show(activity)
+        } else {
+            onAdDismissed()
+        }
+    }
+}
+package za.co.sprinta.app.billing
+
+import android.app.Activity
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import com.android.billingclient.api.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+
+class SprintaBillingViewModel(application: Application) : AndroidViewModel(application), PurchasesUpdatedListener {
+
+    private val billingClient = BillingClient.newBuilder(application)
+        .setListener(this)
+        .enablePendingPurchases()
+        .build()
+
+    private val _isProUser = MutableStateFlow(false)
+    val isProUser: StateFlow<Boolean> = _isProUser
+
+    private val _proProductDetails = MutableStateFlow<ProductDetails?>(null)
+    val proProductDetails: StateFlow<ProductDetails?> = _proProductDetails
+
+    init {
+        connectToPlayBilling()
+    }
+
+    private fun connectToPlayBilling() {
+        billingClient.startConnection(object : BillingClientStateListener {
+            override fun onBillingSetupFinished(billingResult: BillingResult) {
+                if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    querySubscriptionProducts()
+                    checkExistingPurchases()
+                }
+            }
+            override fun onBillingServiceDisconnected() {
+                // Retry connection logic here in production
+            }
+        })
+    }
+
+    private fun querySubscriptionProducts() {
+        val queryProductDetailsParams = QueryProductDetailsParams.newBuilder()
+            .setProductList(
+                listOf(
+                    QueryProductDetailsParams.Product.newBuilder()
+                        .setProductId("sprinta_pro_monthly") // This must match your Google Play Console ID
+                        .setProductType(BillingClient.ProductType.SUBS)
+                        .build()
+                )
+            )
+            .build()
+
+        billingClient.queryProductDetailsAsync(queryProductDetailsParams) { _, productDetailsList ->
+            if (productDetailsList.isNotEmpty()) {
+                _proProductDetails.value = productDetailsList[0]
+            }
+        }
+    }
+
+    fun launchBillingFlow(activity: Activity) {
+        val productDetails = _proProductDetails.value ?: return
+        val offerToken = productDetails.subscriptionOfferDetails?.get(0)?.offerToken ?: return
+
+        val productDetailsParamsList = listOf(
+            BillingFlowParams.ProductDetailsParams.newBuilder()
+                .setProductDetails(productDetails)
+                .setOfferToken(offerToken)
+                .build()
+        )
+
+        val billingFlowParams = BillingFlowParams.newBuilder()
+            .setProductDetailsParamsList(productDetailsParamsList)
+            .build()
+
+        billingClient.launchBillingFlow(activity, billingFlowParams)
+    }
+
+    override fun onPurchasesUpdated(billingResult: BillingResult, purchases: MutableList<Purchase>?) {
+        if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && purchases != null) {
+            for (purchase in purchases) {
+                acknowledgePurchase(purchase)
+            }
+        }
+    }
+
+    private fun acknowledgePurchase(purchase: Purchase) {
+        if (purchase.purchaseState == Purchase.PurchaseState.PURCHASED) {
+            if (!purchase.isAcknowledged) {
+                val acknowledgePurchaseParams = AcknowledgePurchaseParams.newBuilder()
+                    .setPurchaseToken(purchase.purchaseToken)
+                    .build()
+                billingClient.acknowledgePurchase(acknowledgePurchaseParams) { billingResult ->
+                    if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                        _isProUser.value = true
+                    }
+                }
+            } else {
+                _isProUser.value = true
+            }
+        }
+    }
+
+    private fun checkExistingPurchases() {
+        billingClient.queryPurchasesAsync(
+            QueryPurchasesParams.newBuilder().setProductType(BillingClient.ProductType.SUBS).build()
+        ) { _, purchases ->
+            val hasActiveSub = purchases.any { it.purchaseState == Purchase.PurchaseState.PURCHASED }
+            _isProUser.value = hasActiveSub
+        }
+    }
+}
+package za.co.sprinta.app.data.local
+
+import androidx.room.Dao
+import androidx.room.Database
+import androidx.room.Entity
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.PrimaryKey
+import androidx.room.Query
+import androidx.room.RoomDatabase
+import kotlinx.coroutines.flow.Flow
+
+@Entity(tableName = "workouts")
+data class WorkoutEntity(
+    @PrimaryKey val workoutId: String,
+    val userId: String,
+    val distanceMeters: Double,
+    val durationSeconds: Long,
+    val averagePaceSecondsPerKm: Double,
+    val startTimeIso: String,
+    val totalElevation: Double,
+    val notes: String,
+    val routePointsJson: String,
+    val isSynced: Boolean = false,
+    val activityType: String = "RUN"
+)
+
+@Entity(tableName = "personal_records")
+data class PersonalRecordEntity(
+    @PrimaryKey val key: String,
+    val userId: String,
+    val recordType: String,
+    val valueSecondsPerKm: Double,
+    val workoutId: String,
+    val achievedAtIso: String
+)
+
+@Dao
+@JvmSuppressWildcards
+interface WorkoutDao {
+    @Query("SELECT * FROM workouts WHERE userId = :userId ORDER BY startTimeIso DESC")
+    fun observeWorkouts(userId: String): Flow<List<WorkoutEntity>>
+
+    @Query("SELECT * FROM workouts WHERE isSynced = 0 ORDER BY startTimeIso ASC")
+    suspend fun getUnsynced(): List<WorkoutEntity>
+
+    @Query("UPDATE workouts SET isSynced = 1 WHERE workoutId = :workoutId")
+    suspend fun markSynced(workoutId: String): Int
+
+    @Query("SELECT * FROM workouts WHERE userId = :userId ORDER BY startTimeIso DESC")
+    suspend fun getWorkouts(userId: String): List<WorkoutEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertWorkout(workout: WorkoutEntity): Long
+}
+
+@Dao
+@JvmSuppressWildcards
+interface PersonalRecordDao {
+    @Query("SELECT * FROM personal_records WHERE userId = :userId")
+    suspend fun getRecords(userId: String): List<PersonalRecordEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRecord(record: PersonalRecordEntity): Long
+}
+
+@Database(
+    entities = [WorkoutEntity::class, PersonalRecordEntity::class],
+    version = 2,
+    exportSchema = false
+)
+abstract class SprintaDatabase : RoomDatabase() {
+    abstract fun workoutDao(): WorkoutDao
+    abstract fun personalRecordDao(): PersonalRecordDao
+}
+package za.co.sprinta.app.data.remote
+
+import retrofit2.Response
+import retrofit2.http.Body
+import retrofit2.http.GET
+import retrofit2.http.Header
+import retrofit2.http.POST
+import retrofit2.http.Path
+import za.co.sprinta.app.BuildConfig
+import za.co.sprinta.app.model.AuthResponse
+import za.co.sprinta.app.model.LoginRequest
+import za.co.sprinta.app.model.RegisterRequest
+import za.co.sprinta.app.model.SyncResponse
+import za.co.sprinta.app.model.WorkoutDto
+
+interface SprintaApiService {
+    @POST("api/v1/auth/register")
+    suspend fun register(@Body request: RegisterRequest): Response<AuthResponse>
+
+    @POST("api/v1/auth/login")
+    suspend fun login(@Body request: LoginRequest): Response<AuthResponse>
+
+    @POST("api/v1/runs/sync")
+    suspend fun syncWorkout(
+        @Header("Authorization") token: String,
+        @Body workout: WorkoutDto
+    ): Response<SyncResponse>
+
+    @GET("api/v1/runs/user/{userId}")
+    suspend fun getUserWorkouts(
+        @Header("Authorization") token: String,
+        @Path("userId") userId: String
+    ): Response<List<WorkoutDto>>
+}
+package za.co.sprinta.app.data.repository
+
+import com.google.gson.Gson
+import kotlinx.coroutines.flow.Flow
+import retrofit2.Response
+import za.co.sprinta.app.data.local.PersonalRecordEntity
+import za.co.sprinta.app.data.local.SprintaDatabase
+import za.co.sprinta.app.data.local.WorkoutEntity
+import za.co.sprinta.app.data.remote.SprintaApiService
+import za.co.sprinta.app.model.AuthResponse
+import za.co.sprinta.app.model.LoginRequest
+import za.co.sprinta.app.model.RegisterRequest
+import za.co.sprinta.app.model.RoutePoint
+import za.co.sprinta.app.model.WorkoutDto
+import za.co.sprinta.app.prefs.SecureSessionStore
+import za.co.sprinta.app.util.PersonalRecordUtils
+
+class SprintaRepository(
+    private val database: SprintaDatabase,
+    private val api: SprintaApiService,
+    private val session: SecureSessionStore
+) {
+    private val gson = Gson()
+
+    fun observeWorkouts(userId: String): Flow<List<WorkoutEntity>> =
+        database.workoutDao().observeWorkouts(userId)
+
+    suspend fun register(name: String, email: String, password: String): Result<AuthResponse> =
+        executeAuth { api.register(RegisterRequest(name.trim(), email.trim(), password)) }
+
+    suspend fun login(email: String, password: String): Result<AuthResponse> =
+        executeAuth { api.login(LoginRequest(email.trim(), password)) }
+
+    private suspend fun executeAuth(call: suspend () -> Response<AuthResponse>): Result<AuthResponse> {
+        return try {
+            val response = call()
+            if (response.isSuccessful && response.body()?.user != null) {
+                Result.success(response.body()!!)
+            } else {
+                Result.failure(IllegalStateException("Authentication request failed: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun saveSession(response: AuthResponse) {
+        val user = requireNotNull(response.user)
+        session.save(user.id, user.name, user.email, response.token)
+    }
+
+    fun clearSession() = session.clear()
+
+    fun currentSession() = session.load()
+
+    suspend fun saveWorkout(workout: WorkoutEntity): List<String> {
+        database.workoutDao().insertWorkout(workout)
+        val existing = database.personalRecordDao().getRecords(workout.userId)
+        val newRecords = PersonalRecordUtils.detectNewRecords(workout, existing)
+        newRecords.forEach { record ->
+            database.personalRecordDao().insertRecord(
+                PersonalRecordUtils.toEntity(record, workout.userId, workout.workoutId)
+            )
+        }
+        return newRecords.map { it.type }
+    }
+
+    suspend fun getUnsyncedWorkouts(): List<WorkoutEntity> = database.workoutDao().getUnsynced()
+
+    suspend fun markSynced(workoutId: String) = database.workoutDao().markSynced(workoutId)
+
+    suspend fun refreshFromServer(): Result<Int> {
+        val current = session.load() ?: return Result.failure(IllegalStateException("No session"))
+        return try {
+            val response = api.getUserWorkouts(
+                "Bearer ${current["token"]}",
+                current["id"]!!
+            )
+            if (!response.isSuccessful) {
+                Result.failure(IllegalStateException("History request failed: ${response.code()}"))
+            } else {
+                val items = response.body().orEmpty()
+                items.forEach { dto ->
+                    val entity = WorkoutEntity(
+                        workoutId = dto.workoutId,
+                        userId = dto.userId,
+                        distanceMeters = dto.distanceMeters,
+                        durationSeconds = dto.durationSeconds,
+                        averagePaceSecondsPerKm = dto.averagePaceSecondsPerKm,
+                        startTimeIso = dto.startTimeIso,
+                        totalElevation = dto.totalElevation,
+                        notes = dto.notes,
+                        routePointsJson = gson.toJson(dto.routePoints),
+                        isSynced = true
+                    )
+                    database.workoutDao().insertWorkout(entity)
+                }
+                Result.success(items.size)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun entityToDto(entity: WorkoutEntity): WorkoutDto {
+        val points: List<RoutePoint> = runCatching {
+            gson.fromJson(entity.routePointsJson, Array<RoutePoint>::class.java)?.toList() ?: emptyList()
+        }.getOrDefault(emptyList())
+
+        return WorkoutDto(
+            workoutId = entity.workoutId,
+            userId = entity.userId,
+            distanceMeters = entity.distanceMeters,
+            durationSeconds = entity.durationSeconds,
+            averagePaceSecondsPerKm = entity.averagePaceSecondsPerKm,
+            startTimeIso = entity.startTimeIso,
+            totalElevation = entity.totalElevation,
+            notes = entity.notes,
+            routePoints = points.map {
+                za.co.sprinta.app.model.LocationPointDto(
+                    it.latitude,
+                    it.longitude,
+                    it.altitude,
+                    it.timestamp
+                )
+            }
+        )
+    }
+}
+package za.co.sprinta.app.data.sync
+
+import android.content.Context
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import za.co.sprinta.app.AppGraph
+
+class SyncWorker(
+    appContext: Context,
+    workerParams: WorkerParameters
+) : CoroutineWorker(appContext, workerParams) {
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val unsynced = AppGraph.repository.getUnsyncedWorkouts()
+        if (unsynced.isEmpty()) return@withContext Result.success()
+
+        val token = AppGraph.session.load()?.get("token")
+
+        return@withContext try {
+            for (workout in unsynced) {
+                if (token != null) {
+                    val response = AppGraph.api.syncWorkout(
+                        "Bearer $token",
+                        AppGraph.repository.entityToDto(workout)
+                    )
+                    if (response.isSuccessful) {
+                        AppGraph.repository.markSynced(workout.workoutId)
+                    } else if (response.code() in 500..599) {
+                        return@withContext Result.retry()
+                    }
+                } else {
+                    AppGraph.repository.markSynced(workout.workoutId)
+                }
+            }
+            Result.success()
+        } catch (_: Exception) {
+            for (workout in unsynced) {
+                AppGraph.repository.markSynced(workout.workoutId)
+            }
+            Result.success()
+        }
+    }
+
+    companion object {
+        fun schedule(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val request = OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(constraints)
+                .build()
+
+            WorkManager.getInstance(context).enqueue(request)
+        }
+    }
+}
+package za.co.sprinta.app.model
+
+import com.google.gson.annotations.SerializedName
+
+// ---------- API models ----------
+data class RegisterRequest(
+    val name: String,
+    val email: String,
+    val password: String
+)
+
+data class LoginRequest(
+    val email: String,
+    val password: String
+)
+
+data class AuthResponse(
+    val success: Boolean,
+    val token: String,
+    val user: UserDto?
+)
+
+data class UserDto(
+    val id: String,
+    val name: String,
+    val email: String
+)
+
+data class LocationPointDto(
+    val latitude: Double,
+    val longitude: Double,
+    val altitude: Double,
+    val timestamp: Long
+)
+
+data class WorkoutDto(
+    val workoutId: String,
+    val userId: String,
+    val distanceMeters: Double,
+    val durationSeconds: Long,
+    val averagePaceSecondsPerKm: Double,
+    val startTimeIso: String,
+    val totalElevation: Double,
+    val notes: String,
+    val routePoints: List<LocationPointDto>
+)
+
+data class SyncResponse(
+    val status: String,
+    val message: String,
+    val serverTimestamp: Long
+)
+
+// ---------- Local models ----------
+data class RoutePoint(
+    val latitude: Double,
+    val longitude: Double,
+    val altitude: Double,
+    val timestamp: Long
+)
+
+data class NewRecord(
+    val type: String,
+    val valueSecondsPerKm: Double
+)
+
+// ---------- UI models ----------
+data class UserSession(
+    val id: String,
+    val name: String,
+    val email: String,
+    val token: String
+)
+package za.co.sprinta.app.navigation
+
+sealed class Screen(val route: String) {
+    data object Splash : Screen("splash")
+    data object Auth : Screen("auth")
+    data object Dashboard : Screen("dashboard")
+    data object History : Screen("history")
+    data object Profile : Screen("profile")
+    data object About : Screen("about")
+    data object Settings : Screen("settings")
+    data object Tracking : Screen("tracking")
+    data object Summary : Screen("summary")
+    data object ProUpgrade : Screen("pro_upgrade")
+}
+package za.co.sprinta.app.prefs
+
+import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+private val Context.dataStore by preferencesDataStore(name = "sprinta_settings")
+
+data class AppPreferences(
+    val darkMode: Boolean = false,
+    val useMiles: Boolean = false,
+    val audioIntervalKm: Int = 1,
+    val language: String = "en"
+)
+
+class PreferencesStore(private val context: Context) {
+    private val darkKey = booleanPreferencesKey("dark_mode")
+    private val milesKey = booleanPreferencesKey("use_miles")
+    private val audioKey = intPreferencesKey("audio_interval")
+    private val languageKey = stringPreferencesKey("language")
+
+    val preferences: Flow<AppPreferences> = context.dataStore.data.map { p ->
+        AppPreferences(
+            darkMode = p[darkKey] ?: false,
+            useMiles = p[milesKey] ?: false,
+            audioIntervalKm = p[audioKey] ?: 1,
+            language = p[languageKey] ?: "en"
+        )
+    }
+
+    suspend fun setDarkMode(value: Boolean) = context.dataStore.edit { it[darkKey] = value }
+    suspend fun setUseMiles(value: Boolean) = context.dataStore.edit { it[milesKey] = value }
+    suspend fun setAudioInterval(value: Int) = context.dataStore.edit { it[audioKey] = value }
+    suspend fun setLanguage(value: String) = context.dataStore.edit { it[languageKey] = value }
+}
+
+class SecureSessionStore(context: Context) {
+    private val prefs = run {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            "sprinta_secure_session",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
+    fun save(id: String, name: String, email: String, token: String) {
+        prefs.edit()
+            .putString("id", id)
+            .putString("name", name)
+            .putString("email", email)
+            .putString("token", token)
+            .apply()
+    }
+
+    fun load(): Map<String, String>? {
+        val id = prefs.getString("id", null) ?: return null
+        val name = prefs.getString("name", null) ?: return null
+        val email = prefs.getString("email", null) ?: return null
+        val token = prefs.getString("token", null) ?: return null
+        return mapOf("id" to id, "name" to name, "email" to email, "token" to token)
+    }
+
+    fun clear() = prefs.edit().clear().apply()
+}
+package za.co.sprinta.app.service
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Intent
+import android.location.Location
+import android.os.Build
+import android.os.IBinder
+import android.os.Looper
+import android.speech.tts.TextToSpeech
+import androidx.core.app.NotificationCompat
+import com.google.android.gms.location.*
+import kotlinx.coroutines.*
+import za.co.sprinta.app.AppGraph
+import za.co.sprinta.app.R
+import za.co.sprinta.app.tracking.TrackingStore
+import za.co.sprinta.app.util.GeoUtils
+import java.util.Locale
+
+class LocationTrackingService : Service(), TextToSpeech.OnInitListener {
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private var tts: TextToSpeech? = null
+
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var audioIntervalKm: Int = 1
+    private var lastAnnouncedKm: Int = 0
+
+    private val callback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            result.locations.forEach { location: Location ->
+                // GPS Jitter Filter: Ignore accuracy worse than 15 meters
+                if (location.accuracy > 15f) return@forEach
+
+                val currentPoints = TrackingStore.state.value.points
+                val previous = currentPoints.lastOrNull()
+
+                if (previous != null) {
+                    val timeDiffSeconds = (location.time - previous.timestamp) / 1000.0
+                    val dist = GeoUtils.haversineMeters(
+                        previous.latitude, previous.longitude,
+                        location.latitude, location.longitude
+                    )
+                    // Speed Filter: Ignore impossible human speeds (> 15 meters/sec / 54 km/h)
+                    if (timeDiffSeconds > 0 && (dist / timeDiffSeconds) > 15.0) return@forEach
+                }
+
+                TrackingStore.addLocation(location)
+                checkAndAnnounceSplit()
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        tts = TextToSpeech(this, this)
+
+        // Observe user settings for Audio Updates
+        serviceScope.launch {
+            AppGraph.preferences.preferences.collect { prefs ->
+                audioIntervalKm = prefs.audioIntervalKm
+            }
+        }
+
+        createNotificationChannel()
+        startTrackingForeground()
+    }
+
+    private fun checkAndAnnounceSplit() {
+        if (audioIntervalKm == 0) return // Audio updates turned off in settings
+
+        val currentKm = (TrackingStore.state.value.distanceMeters / 1000).toInt()
+        if (currentKm >= lastAnnouncedKm + audioIntervalKm) {
+            lastAnnouncedKm = currentKm
+            val pace = GeoUtils.formatPace(TrackingStore.state.value.paceSecondsPerKm)
+
+            val message = "$currentKm kilometer${if (currentKm > 1) "s" else ""} completed. Average pace: $pace."
+            tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, null)
+        }
+    }
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts?.language = Locale.getDefault()
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> startUpdates()
+            ACTION_STOP -> stopTracking()
+        }
+        return START_STICKY
+    }
+
+    private fun startTrackingForeground() {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("SPRINTA")
+            .setContentText("Tracking your run in real-time...")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setOngoing(true)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun startUpdates() {
+        TrackingStore.start()
+        lastAnnouncedKm = 0
+
+        // Battery Saver Location Request
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
+            .setMinUpdateIntervalMillis(1000L)
+            .setMinUpdateDistanceMeters(2.0f) // Only fetch if user moved 2 meters
+            .build()
+
+        try {
+            fusedLocationClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
+        } catch (e: SecurityException) {
+            stopSelf()
+        }
+    }
+
+    private fun stopTracking() {
+        fusedLocationClient.removeLocationUpdates(callback)
+        TrackingStore.stop()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        serviceScope.cancel()
+        tts?.stop()
+        tts?.shutdown()
+        fusedLocationClient.removeLocationUpdates(callback)
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(CHANNEL_ID, "SPRINTA Run Tracking", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    companion object {
+        const val ACTION_START = "za.co.sprinta.app.action.START_TRACKING"
+        const val ACTION_STOP = "za.co.sprinta.app.action.STOP_TRACKING"
+        private const val CHANNEL_ID = "sprinta_tracking"
+        private const val NOTIFICATION_ID = 5101
+    }
+}
+package za.co.sprinta.app.service
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Intent
+import android.location.Location
+import android.os.Build
+import android.os.IBinder
+import android.os.Looper
+import androidx.core.app.NotificationCompat
+import com.google.android.gms.location.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import za.co.sprinta.app.tracking.TrackingStore
+import za.co.sprinta.app.util.LocationUtils
+
+data class TrackingState(
+    val isTracking: Boolean = false,
+    val distanceMeters: Double = 0.0,
+    val durationSeconds: Long = 0L,
+    val currentPaceSecondsPerKm: Double = 0.0,
+    val routeCoordinates: List<Pair<Double, Double>> = emptyList()
+)
+
+class TrackingService : Service() {
+
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private var lastLocation: Location? = null
+
+    private val callback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            result.locations.forEach { location ->
+                if (LocationUtils.isReliableLocation(location, lastLocation)) {
+                    lastLocation = location
+                    TrackingStore.addLocation(location)
+                    updateTrackingState()
+                }
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        createNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> startTracking()
+            ACTION_STOP -> stopTracking()
+        }
+        return START_STICKY
+    }
+
+    private fun startTracking() {
+        startForegroundServiceNotification()
+        TrackingStore.start()
+        updateTrackingState()
+
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
+            .setMinUpdateIntervalMillis(1000L)
+            .setMinUpdateDistanceMeters(2.0f)
+            .build()
+
+        try {
+            fusedLocationClient.requestLocationUpdates(locationRequest, callback, Looper.getMainLooper())
+        } catch (e: SecurityException) {
+            stopSelf()
+        }
+    }
+
+    private fun stopTracking() {
+        fusedLocationClient.removeLocationUpdates(callback)
+        TrackingStore.stop()
+        updateTrackingState()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun updateTrackingState() {
+        val storeState = TrackingStore.state.value
+        val coords = storeState.points.map { Pair(it.latitude, it.longitude) }
+        _trackingState.value = TrackingState(
+            isTracking = storeState.active,
+            distanceMeters = storeState.distanceMeters,
+            durationSeconds = storeState.durationSeconds,
+            currentPaceSecondsPerKm = storeState.paceSecondsPerKm,
+            routeCoordinates = coords
+        )
+    }
+
+    private fun startForegroundServiceNotification() {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("SPRINTA Tracking Active")
+            .setContentText("Recording your GPS route and live metrics...")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setOngoing(true)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(CHANNEL_ID, "SPRINTA Tracking Engine", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    override fun onDestroy() {
+        fusedLocationClient.removeLocationUpdates(callback)
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    companion object {
+        const val ACTION_START = "za.co.sprinta.app.action.START_TRACKING"
+        const val ACTION_STOP = "za.co.sprinta.app.action.STOP_TRACKING"
+        private const val CHANNEL_ID = "sprinta_tracking_engine"
+        private const val NOTIFICATION_ID = 5102
+
+        private val _trackingState = MutableStateFlow(TrackingState())
+        val trackingState: StateFlow<TrackingState> = _trackingState
+    }
+}
+package za.co.sprinta.app.tracking
+
+import android.location.Location
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import za.co.sprinta.app.model.RoutePoint
+import za.co.sprinta.app.util.GeoUtils
+
+object TrackingStore {
+    data class State(
+        val active: Boolean = false,
+        val startTimeMillis: Long = 0L,
+        val distanceMeters: Double = 0.0,
+        val durationSeconds: Long = 0L,
+        val paceSecondsPerKm: Double = 0.0,
+        val totalElevation: Double = 0.0,
+        val points: List<RoutePoint> = emptyList()
+    )
+
+    private val _state = MutableStateFlow(State())
+    val state: StateFlow<State> = _state
+
+    fun start() {
+        _state.value = State(
+            active = true,
+            startTimeMillis = System.currentTimeMillis()
+        )
+    }
+
+    fun addLocation(location: Location) {
+        val current = _state.value
+        if (!current.active) return
+
+        val newPoint = RoutePoint(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            altitude = location.altitude,
+            timestamp = location.time
+        )
+
+        val previous = current.points.lastOrNull()
+        val incrementalDistance = previous?.let {
+            GeoUtils.haversineMeters(
+                it.latitude,
+                it.longitude,
+                newPoint.latitude,
+                newPoint.longitude
+            )
+        } ?: 0.0
+
+        val elevationGain = previous?.let {
+            maxOf(0.0, newPoint.altitude - it.altitude)
+        } ?: 0.0
+
+        val elapsed = ((System.currentTimeMillis() - current.startTimeMillis) / 1000L).coerceAtLeast(0L)
+        val distance = current.distanceMeters + incrementalDistance
+        val pace = GeoUtils.paceSecondsPerKm(distance, elapsed)
+
+        _state.value = current.copy(
+            distanceMeters = distance,
+            durationSeconds = elapsed,
+            paceSecondsPerKm = pace,
+            totalElevation = current.totalElevation + elevationGain,
+            points = current.points + newPoint
+        )
+    }
+
+    fun stop() {
+        val current = _state.value
+        val elapsed = ((System.currentTimeMillis() - current.startTimeMillis) / 1000L).coerceAtLeast(current.durationSeconds)
+        _state.value = current.copy(
+            active = false,
+            durationSeconds = elapsed,
+            paceSecondsPerKm = GeoUtils.paceSecondsPerKm(current.distanceMeters, elapsed)
+        )
+    }
+
+    fun reset() {
+        _state.value = State()
+    }
+}
+package za.co.sprinta.app.ui.about
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import za.co.sprinta.app.R
+import za.co.sprinta.app.ui.BorderGray
+import za.co.sprinta.app.ui.SprintaDarkSurface
+import za.co.sprinta.app.ui.SprintaGold
+import za.co.sprinta.app.ui.SprintaWhite
+
+@Composable
+fun AboutScreen(
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.sprinta_flat_logo_transparent),
+            contentDescription = "SPRINTA Logo",
+            modifier = Modifier.size(120.dp)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "SPRINTA",
+            style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
+            color = SprintaGold
+        )
+        Text(
+            text = "Version 1.0.0 (Build 101)",
+            style = MaterialTheme.typography.bodyMedium,
+            color = SprintaWhite.copy(alpha = 0.6f)
+        )
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, BorderGray),
+            colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "ABOUT THE APPLICATION",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = SprintaGold
+                )
+                Text(
+                    text = "SPRINTA is a modern, high-performance athletic activity tracking platform designed for multi-sport GPS logging, offline telemetry sync, and personal record benchmarking.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SprintaWhite
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "DEVELOPER INFO",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = SprintaGold
+                )
+                Text(
+                    text = "Open-Source Coding â€¢ OPSC 6312 POE Part 2\nBuilt with Kotlin, Jetpack Compose, Room & Firebase.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SprintaWhite
+                )
+            }
+        }
+    }
+}
+package za.co.sprinta.app.ui.manual
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import za.co.sprinta.app.ui.BorderGray
+import za.co.sprinta.app.ui.SprintaDarkSurface
+import za.co.sprinta.app.ui.SprintaGold
+import za.co.sprinta.app.ui.SprintaTextField
+import za.co.sprinta.app.ui.SprintaWhite
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+@Composable
+fun ManualEntryDialog(
+    onDismiss: () -> Unit,
+    onSave: (activityType: String, distanceKm: Double, durationMins: Long, dateIso: String, notes: String) -> Unit
+) {
+    var selectedActivity by remember { mutableStateOf("RUN") }
+    var expandedDropdown by remember { mutableStateOf(false) }
+
+    var distanceText by remember { mutableStateOf("") }
+    var hoursText by remember { mutableStateOf("") }
+    var minsText by remember { mutableStateOf("") }
+    var notesText by remember { mutableStateOf("") }
+
+    val activityOptions = listOf(
+        "RUN" to "ðŸƒâ€â™‚ï¸ Run",
+        "WALK" to "ðŸš¶â€â™‚ï¸ Walk",
+        "WORKOUT" to "ðŸ‹ï¸â€â™‚ï¸ Workout"
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "Manual Workout Entry",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "ACTIVITY TYPE",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                )
+
+                Box {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { expandedDropdown = true },
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, BorderGray),
+                        colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                activityOptions.firstOrNull { it.first == selectedActivity }?.second ?: "ðŸƒâ€â™‚ï¸ Run",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = SprintaWhite
+                            )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = "Select", tint = SprintaGold)
+                        }
+                    }
+
+                    DropdownMenu(
+                        expanded = expandedDropdown,
+                        onDismissRequest = { expandedDropdown = false }
+                    ) {
+                        activityOptions.forEach { (type, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    selectedActivity = type
+                                    expandedDropdown = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                SprintaTextField(
+                    value = distanceText,
+                    onValueChange = { distanceText = it },
+                    label = "Distance (km)",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SprintaTextField(
+                        value = hoursText,
+                        onValueChange = { hoursText = it },
+                        label = "Hours",
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    SprintaTextField(
+                        value = minsText,
+                        onValueChange = { minsText = it },
+                        label = "Minutes",
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                }
+
+                SprintaTextField(
+                    value = notesText,
+                    onValueChange = { notesText = it },
+                    label = "Notes",
+                    singleLine = false
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val dist = distanceText.toDoubleOrNull() ?: 0.0
+                    val hours = hoursText.toLongOrNull() ?: 0L
+                    val mins = minsText.toLongOrNull() ?: 0L
+                    val totalMins = (hours * 60L) + mins
+                    val nowIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date())
+
+                    onSave(selectedActivity, dist, totalMins, nowIso, notesText)
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = SprintaGold, contentColor = SprintaWhite)
+            ) {
+                Text("Save Workout", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismiss,
+                border = BorderStroke(1.dp, BorderGray)
+            ) {
+                Text("Cancel", color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+    )
+}
+package za.co.sprinta.app.ui.profile
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import za.co.sprinta.app.MainViewModel
+import za.co.sprinta.app.ui.BorderGray
+import za.co.sprinta.app.ui.SprintaBlack
+import za.co.sprinta.app.ui.SprintaDarkSurface
+import za.co.sprinta.app.ui.SprintaGold
+import za.co.sprinta.app.ui.SprintaWhite
+import za.co.sprinta.app.util.GeoUtils
+
+@Composable
+fun ProfileScreen(
+    vm: MainViewModel,
+    modifier: Modifier = Modifier
+) {
+    val session by vm.session.collectAsState()
+    val workouts by vm.workouts.collectAsState()
+    val prefs by vm.preferences.collectAsState()
+
+    val userName = session?.get("name") ?: "Athlete"
+    val email = session?.get("email") ?: "athlete@sprinta.app"
+
+    val totalRuns = workouts.size
+    val totalMeters = workouts.sumOf { it.distanceMeters }
+    val totalSeconds = workouts.sumOf { it.durationSeconds }
+    val avgPace = GeoUtils.paceSecondsPerKm(totalMeters, totalSeconds)
+
+    val distanceKm = if (prefs.useMiles) totalMeters / 1609.344 else totalMeters / 1000.0
+    val unitLabel = if (prefs.useMiles) "mi" else "km"
+
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
+            ) {
+                Row(
+                    modifier = Modifier.padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(SprintaGold)
+                            .padding(16.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Person,
+                            contentDescription = "Profile Avatar",
+                            tint = SprintaBlack,
+                            modifier = Modifier.padding(4.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text(
+                            text = userName,
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = SprintaWhite
+                        )
+                        Text(
+                            text = email,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SprintaWhite.copy(alpha = 0.6f)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "âš¡ 3-WEEK STREAK",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = SprintaGold
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                text = "ALL-TIME STATS",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Total Activities", color = SprintaWhite.copy(alpha = 0.7f))
+                        Text("$totalRuns", fontWeight = FontWeight.Bold, color = SprintaWhite)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Total Distance", color = SprintaWhite.copy(alpha = 0.7f))
+                        Text("%.2f %s".format(distanceKm, unitLabel), fontWeight = FontWeight.Bold, color = SprintaGold)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Total Time", color = SprintaWhite.copy(alpha = 0.7f))
+                        Text(GeoUtils.formatDuration(totalSeconds), fontWeight = FontWeight.Bold, color = SprintaWhite)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Average Pace", color = SprintaWhite.copy(alpha = 0.7f))
+                        Text(GeoUtils.formatPace(avgPace), fontWeight = FontWeight.Bold, color = SprintaWhite)
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                text = "12-WEEK TRAINING VOLUME",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        val volumes = listOf(12, 18, 25, 30, 22, 15, 35, 28, 40, 32, 45, 50)
+                        val maxVol = volumes.maxOrNull() ?: 1
+
+                        volumes.forEachIndexed { idx, vol ->
+                            val heightFraction = vol.toFloat() / maxVol
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.6f)
+                                        .height((100 * heightFraction).dp)
+                                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                                        .background(if (idx == volumes.lastIndex) SprintaGold else BorderGray)
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Weekly Distance Breakdown ($unitLabel)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SprintaWhite.copy(alpha = 0.5f),
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                }
+            }
+        }
+    }
+}
+package za.co.sprinta.app.ui.splash
+
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.annotation.OptIn
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.delay
+import za.co.sprinta.app.R
+import za.co.sprinta.app.ui.SprintaGold
+import za.co.sprinta.app.ui.SprintaWhite
+
+@OptIn(UnstableApi::class)
+@Composable
+fun VideoSplashScreen(
+    onSplashComplete: () -> Unit
+) {
+    BackHandler(enabled = true) {}
+
+    val context = LocalContext.current
+    var isVideoLoaded by remember { mutableStateOf(false) }
+    var videoFailed by remember { mutableStateOf(false) }
+
+    val rawResId = remember { getRawVideoResId(context) }
+
+    val exoPlayer = remember(context, rawResId) {
+        if (rawResId != 0) {
+            try {
+                ExoPlayer.Builder(context).build().apply {
+                    val videoUri = Uri.parse("android.resource://${context.packageName}/$rawResId")
+                    setMediaItem(MediaItem.fromUri(videoUri))
+                    volume = 0f
+                    repeatMode = Player.REPEAT_MODE_OFF
+                    prepare()
+                    playWhenReady = true
+                }
+            } catch (e: Exception) {
+                videoFailed = true
+                null
+            }
+        } else {
+            videoFailed = true
+            null
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (exoPlayer != null && !videoFailed) {
+            exoPlayer.addListener(object : Player.Listener {
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        isVideoLoaded = true
+                    } else if (playbackState == Player.STATE_ENDED) {
+                        onSplashComplete()
+                    }
+                }
+
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    videoFailed = true
+                }
+            })
+            delay(5000L)
+            onSplashComplete()
+        } else {
+            delay(2500L)
+            onSplashComplete()
+        }
+    }
+
+    DisposableEffect(exoPlayer) {
+        onDispose {
+            exoPlayer?.release()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SprintaWhite),
+        contentAlignment = Alignment.Center
+    ) {
+        if (exoPlayer != null && !videoFailed) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        if (exoPlayer == null || videoFailed || !isVideoLoaded) {
+            val alphaAnim = remember { Animatable(0f) }
+            LaunchedEffect(Unit) {
+                alphaAnim.animateTo(1f, animationSpec = tween(800))
+            }
+
+            Column(
+                modifier = Modifier.alpha(alphaAnim.value),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.sprinta_flat_logo_transparent),
+                    contentDescription = "SPRINTA Logo",
+                    modifier = Modifier.size(160.dp)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "SPRINTA",
+                    style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
+                    color = SprintaGold
+                )
+            }
+        }
+    }
+}
+
+private fun getRawVideoResId(context: Context): Int {
+    val res1 = context.resources.getIdentifier("splash_video", "raw", context.packageName)
+    if (res1 != 0) return res1
+    val res2 = context.resources.getIdentifier("sprinta_splash", "raw", context.packageName)
+    if (res2 != 0) return res2
+    return 0
+}
+package za.co.sprinta.app.ui
+
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.google.android.gms.ads.AdListener
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.LoadAdError
+import za.co.sprinta.app.ads.AdManager
+
+@Composable
+fun AdSlotBanner(
+    modifier: Modifier = Modifier,
+    adUnitId: String = AdManager.BANNER_AD_UNIT_ID
+) {
+    AdSlot(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(50.dp)
+    ) {
+        AndroidView(
+            factory = { context ->
+                AdView(context).apply {
+                    setAdSize(AdSize.BANNER)
+                    setAdUnitId(adUnitId)
+                    adListener = object : AdListener() {
+                        override fun onAdLoaded() {}
+                        override fun onAdFailedToLoad(error: LoadAdError) {}
+                    }
+                    loadAd(AdRequest.Builder().build())
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+package za.co.sprinta.app.ui
+
+import androidx.compose.ui.graphics.Color
+
+val SprintaBlack = Color(0xFF0F0F10)
+val SprintaGold = Color(0xFFD8B154)
+val SprintaGoldDark = Color(0xFFB89234)
+val SprintaDarkSurface = Color(0xFF161618)
+val SprintaDarkCard = Color(0xFF232326)
+val BorderGray = Color(0xFF2C2C2E)
+val SprintaWhite = Color(0xFFFFFFFF)
+val SprintaError = Color(0xFFE53935)
+val SprintaSuccess = Color(0xFF4CAF50)
+package za.co.sprinta.app.ui
+
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
+
+val PillShape = CircleShape
+val CardShape = RoundedCornerShape(16.dp)
+val InputShape = RoundedCornerShape(12.dp)
+val DialogShape = RoundedCornerShape(20.dp)
+package za.co.sprinta.app.ui
+
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+
+object Spacing {
+    val none: Dp = 0.dp
+    val xxSmall: Dp = 2.dp
+    val xSmall: Dp = 4.dp
+    val small: Dp = 8.dp
+    val medium: Dp = 16.dp
+    val large: Dp = 24.dp
+    val xLarge: Dp = 32.dp
+    val xxLarge: Dp = 48.dp
+    val hero: Dp = 64.dp
+}
+package za.co.sprinta.app.ui
+
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+
+private val DarkScheme = darkColorScheme(
+    primary = SprintaGold,
+    onPrimary = SprintaBlack,
+    secondary = SprintaGold,
+    onSecondary = SprintaBlack,
+    background = SprintaBlack,
+    surface = SprintaDarkSurface,
+    surfaceVariant = SprintaDarkCard,
+    onBackground = SprintaWhite,
+    onSurface = SprintaWhite,
+    outline = BorderGray,
+    error = SprintaError
+)
+
+@Composable
+fun SprintaTheme(
+    darkMode: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    MaterialTheme(
+        colorScheme = DarkScheme,
+        typography = SprintaTypography,
+        content = content
+    )
+}
+package za.co.sprinta.app.ui
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+val MontserratFontFamily = FontFamily.SansSerif
+val InterFontFamily = FontFamily.Default
+
+val SprintaTypography = Typography(
+    // Hero Stat: 52sp Montserrat ExtraBold with Tabular Numerals
+    displayLarge = TextStyle(
+        fontFamily = MontserratFontFamily,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 52.sp,
+        lineHeight = 58.sp,
+        fontFeatureSettings = "tnum"
+    ),
+    // H1: 28sp Bold Montserrat
+    headlineLarge = TextStyle(
+        fontFamily = MontserratFontFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 28.sp,
+        lineHeight = 34.sp
+    ),
+    // H2: 22sp SemiBold Montserrat
+    headlineMedium = TextStyle(
+        fontFamily = MontserratFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp
+    ),
+    // Title: 18sp SemiBold Montserrat
+    titleLarge = TextStyle(
+        fontFamily = MontserratFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 18.sp,
+        lineHeight = 24.sp
+    ),
+    // Title Medium / Stat Value: 20sp Bold
+    titleMedium = TextStyle(
+        fontFamily = MontserratFontFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 20.sp,
+        lineHeight = 26.sp,
+        fontFeatureSettings = "tnum"
+    ),
+    // Body: 16sp Inter Regular
+    bodyLarge = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 22.sp
+    ),
+    // Body Medium: 14sp Inter Regular
+    bodyMedium = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.sp,
+        lineHeight = 20.sp
+    ),
+    // Label: 14sp Inter Medium
+    labelLarge = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        lineHeight = 18.sp
+    ),
+    // Label Small / Stat Label: 12sp Inter SemiBold
+    labelSmall = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.5.sp
+    ),
+    // Caption: 12sp Inter Regular
+    bodySmall = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 16.sp
+    )
+)
+package za.co.sprinta.app.ui
+
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import za.co.sprinta.app.R
+
+@Composable
+fun SprintaPrimaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        shape = PillShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = SprintaGold,
+            contentColor = SprintaBlack,
+            disabledContainerColor = SprintaGold.copy(alpha = 0.4f),
+            disabledContentColor = SprintaBlack.copy(alpha = 0.6f)
+        )
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            color = SprintaBlack
+        )
+    }
+}
+
+@Composable
+fun SprintaSecondaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        shape = PillShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = BorderGray,
+            contentColor = SprintaWhite,
+            disabledContainerColor = BorderGray.copy(alpha = 0.4f),
+            disabledContentColor = SprintaWhite.copy(alpha = 0.6f)
+        )
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = SprintaWhite
+        )
+    }
+}
+
+@Composable
+fun PrimaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    SprintaPrimaryButton(text = text, onClick = onClick, modifier = modifier, enabled = enabled)
+}
+
+@Composable
+fun SecondaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    SprintaSecondaryButton(text = text, onClick = onClick, modifier = modifier, enabled = enabled)
+}
+
+@Composable
+fun SprintaTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    isError: Boolean = false,
+    errorMessage: String? = null
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label, style = MaterialTheme.typography.bodyMedium) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 56.dp),
+            singleLine = singleLine,
+            visualTransformation = visualTransformation,
+            keyboardOptions = keyboardOptions,
+            keyboardActions = keyboardActions,
+            isError = isError,
+            shape = InputShape,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = SprintaGold,
+                unfocusedBorderColor = BorderGray,
+                focusedLabelColor = SprintaGold,
+                unfocusedLabelColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+            )
+        )
+        if (isError && !errorMessage.isNullOrBlank()) {
+            Text(
+                text = errorMessage,
+                color = SprintaError,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = Spacing.small, top = Spacing.xSmall)
+            )
+        }
+    }
+}
+
+@Composable
+fun StatCard(title: String, value: String, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier,
+        shape = CardShape,
+        border = BorderStroke(1.dp, BorderGray),
+        colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+    ) {
+        Column(modifier = Modifier.padding(Spacing.medium)) {
+            Text(
+                text = title.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                color = SprintaBlack.copy(alpha = 0.6f),
+                letterSpacing = 0.5.sp
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                color = SprintaBlack
+            )
+        }
+    }
+}
+
+@Composable
+fun StatBlock(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    isHero: Boolean = false
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = SprintaBlack.copy(alpha = 0.6f)
+        )
+        Text(
+            text = value,
+            style = if (isHero) MaterialTheme.typography.displayLarge else MaterialTheme.typography.titleMedium,
+            color = SprintaBlack
+        )
+    }
+}
+
+@Composable
+fun SprintaTopAppBar(
+    title: String? = null,
+    isDarkMode: Boolean = isSystemInDarkTheme(),
+    onBackClick: (() -> Unit)? = null,
+    actions: @Composable RowScope.() -> Unit = {}
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .padding(horizontal = Spacing.medium),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onBackClick != null) {
+                IconButton(onClick = onBackClick) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+                Spacer(modifier = Modifier.width(Spacing.xSmall))
+            }
+            val wordmarkRes = if (isDarkMode) R.drawable.sprinta_wordmark_white else R.drawable.sprinta_wordmark_gold
+            Image(
+                painter = painterResource(id = wordmarkRes),
+                contentDescription = "SPRINTA Wordmark",
+                modifier = Modifier.height(32.dp)
+            )
+            if (title != null) {
+                Spacer(modifier = Modifier.width(Spacing.small))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = SprintaGold
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            actions()
+        }
+    }
+}
+
+@Composable
+fun AdSlot(
+    modifier: Modifier = Modifier,
+    height: Dp = 50.dp,
+    content: @Composable () -> Unit = {}
+) {
+    val transition = rememberInfiniteTransition(label = "AdShimmer")
+    val alpha by transition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.7f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "AlphaAnimation"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(height)
+            .clip(InputShape)
+            .background(BorderGray.copy(alpha = alpha)),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+    }
+}
+
+@Composable
+fun SectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+        color = MaterialTheme.colorScheme.onBackground,
+        modifier = Modifier.padding(vertical = Spacing.small)
+    )
+}
+
+@Composable
+fun RowDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = Spacing.small),
+        color = BorderGray
+    )
+}
+package za.co.sprinta.app.util
+
+import android.location.Location
+import java.util.Locale
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
+
+object LocationUtils {
+    private const val EARTH_RADIUS_METERS = 6_371_000.0
+    private const val MAX_ACCURACY_METERS = 15.0f
+    private const val MAX_SPEED_MPS = 15.0 // 54 km/h
+
+    fun haversineDistanceMeters(
+        lat1: Double, lon1: Double,
+        lat2: Double, lon2: Double
+    ): Double {
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+                cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
+                sin(dLon / 2) * sin(dLon / 2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return EARTH_RADIUS_METERS * c
+    }
+
+    fun isReliableLocation(newLocation: Location, lastLocation: Location?): Boolean {
+        if (newLocation.hasAccuracy() && newLocation.accuracy > MAX_ACCURACY_METERS) {
+            return false
+        }
+        if (lastLocation != null) {
+            val timeDiffSec = (newLocation.time - lastLocation.time) / 1000.0
+            if (timeDiffSec > 0) {
+                val distance = haversineDistanceMeters(
+                    lastLocation.latitude, lastLocation.longitude,
+                    newLocation.latitude, newLocation.longitude
+                )
+                val speed = distance / timeDiffSec
+                if (speed > MAX_SPEED_MPS) {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    fun formatPace(secondsPerKm: Double): String {
+        if (secondsPerKm <= 0.0 || secondsPerKm.isInfinite() || secondsPerKm.isNaN()) {
+            return "--:-- /km"
+        }
+        val totalSec = secondsPerKm.toInt()
+        val minutes = totalSec / 60
+        val seconds = totalSec % 60
+        return "%02d:%02d /km".format(Locale.US, minutes, seconds)
+    }
+
+    fun formatDuration(seconds: Long): String {
+        val h = seconds / 3600
+        val m = (seconds % 3600) / 60
+        val s = seconds % 60
+        return if (h > 0) "%02d:%02d:%02d".format(Locale.US, h, m, s)
+        else "%02d:%02d".format(Locale.US, m, s)
+    }
+}
+package za.co.sprinta.app.util
+
+import za.co.sprinta.app.data.local.PersonalRecordEntity
+import za.co.sprinta.app.data.local.WorkoutEntity
+import za.co.sprinta.app.model.NewRecord
+import java.time.Instant
+
+object PersonalRecordUtils {
+    private data class Target(val type: String, val minimumDistanceMeters: Double)
+
+    private val targets = listOf(
+        Target("1K", 1_000.0),
+        Target("5K", 5_000.0),
+        Target("10K", 10_000.0)
+    )
+
+    fun detectNewRecords(
+        workout: WorkoutEntity,
+        existing: List<PersonalRecordEntity>
+    ): List<NewRecord> {
+        val newRecords = mutableListOf<NewRecord>()
+        for (target in targets) {
+            if (workout.distanceMeters < target.minimumDistanceMeters) continue
+            val current = existing.firstOrNull { it.recordType == target.type }
+            if (current == null || workout.averagePaceSecondsPerKm < current.valueSecondsPerKm) {
+                newRecords += NewRecord(target.type, workout.averagePaceSecondsPerKm)
+            }
+        }
+        return newRecords
+    }
+
+    fun toEntity(record: NewRecord, userId: String, workoutId: String): PersonalRecordEntity =
+        PersonalRecordEntity(
+            key = "$userId-${record.type}",
+            userId = userId,
+            recordType = record.type,
+            valueSecondsPerKm = record.valueSecondsPerKm,
+            workoutId = workoutId,
+            achievedAtIso = Instant.now().toString()
+        )
+}
+package za.co.sprinta.app.util
+
+import java.util.Locale
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
+
+object Validators {
+    private val emailRegex = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+    private val passwordRegex = Regex("^(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z0-9]).{8,}$")
+
+    fun isValidEmail(email: String): Boolean = emailRegex.matches(email.trim())
+    fun isValidPassword(password: String): Boolean = passwordRegex.matches(password)
+}
+
+object GeoUtils {
+    private const val EARTH_RADIUS_METERS = 6_371_000.0
+
+    fun haversineMeters(
+        lat1: Double,
+        lon1: Double,
+        lat2: Double,
+        lon2: Double
+    ): Double {
+        val lat1Rad = Math.toRadians(lat1)
+        val lat2Rad = Math.toRadians(lat2)
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+            cos(lat1Rad) * cos(lat2Rad) * sin(dLon / 2) * sin(dLon / 2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return EARTH_RADIUS_METERS * c
+    }
+
+    fun paceSecondsPerKm(distanceMeters: Double, durationSeconds: Long): Double {
+        if (distanceMeters <= 0.0) return 0.0
+        return durationSeconds.toDouble() / (distanceMeters / 1000.0)
+    }
+
+    fun formatDuration(seconds: Long): String {
+        val h = seconds / 3600
+        val m = (seconds % 3600) / 60
+        val s = seconds % 60
+        return if (h > 0) "%02d:%02d:%02d".format(Locale.US, h, m, s)
+        else "%02d:%02d".format(Locale.US, m, s)
+    }
+
+    fun formatPace(secondsPerKm: Double): String {
+        if (secondsPerKm <= 0.0 || secondsPerKm.isInfinite() || secondsPerKm.isNaN()) return "--:-- /km"
+        val total = secondsPerKm.toInt()
+        return "%02d:%02d /km".format(Locale.US, total / 60, total % 60)
+    }
+}
+package za.co.sprinta.app.worker
+
+import android.content.Context
+import androidx.work.CoroutineWorker
+import androidx.work.WorkerParameters
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import za.co.sprinta.app.AppGraph
+
+class SyncWorker(
+    appContext: Context,
+    workerParams: WorkerParameters
+) : CoroutineWorker(appContext, workerParams) {
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val token = AppGraph.session.load()?.get("token")
+            ?: return@withContext Result.failure()
+
+        val unsynced = AppGraph.repository.getUnsyncedWorkouts()
+        if (unsynced.isEmpty()) return@withContext Result.success()
+
+        return@withContext try {
+            for (workout in unsynced) {
+                val response = AppGraph.api.syncWorkout(
+                    "Bearer $token",
+                    AppGraph.repository.entityToDto(workout)
+                )
+
+                when {
+                    response.isSuccessful -> AppGraph.repository.markSynced(workout.workoutId)
+                    response.code() in 500..599 -> return@withContext Result.retry()
+                    response.code() == 401 -> return@withContext Result.failure()
+                    else -> return@withContext Result.failure()
+                }
+            }
+            Result.success()
+        } catch (_: Exception) {
+            Result.retry()
+        }
+    }
+
+    companion object {
+        fun schedule(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val request = OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(constraints)
+                .build()
+
+            WorkManager.getInstance(context).enqueue(request)
+        }
+    }
+}
+package za.co.sprinta.app
+
+import android.content.Context
+import androidx.room.Room
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import za.co.sprinta.app.data.local.SprintaDatabase
+import za.co.sprinta.app.data.remote.SprintaApiService
+import za.co.sprinta.app.data.repository.SprintaRepository
+import za.co.sprinta.app.prefs.PreferencesStore
+import za.co.sprinta.app.prefs.SecureSessionStore
+import java.util.concurrent.TimeUnit
+
+object AppGraph {
+    lateinit var database: SprintaDatabase
+        private set
+    lateinit var api: SprintaApiService
+        private set
+    lateinit var repository: SprintaRepository
+        private set
+    lateinit var preferences: PreferencesStore
+        private set
+    lateinit var session: SecureSessionStore
+        private set
+
+    fun init(context: Context) {
+        database = Room.databaseBuilder(
+            context,
+            SprintaDatabase::class.java,
+            "sprinta.db"
+        ).fallbackToDestructiveMigration().build()
+
+        val logger = HttpLoggingInterceptor().apply {
+            level = HttpLoggingInterceptor.Level.BASIC
+        }
+
+        val client = OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(logger)
+            .build()
+
+        api = Retrofit.Builder()
+            .baseUrl(BuildConfig.API_BASE_URL.trimEnd('/') + "/")
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(SprintaApiService::class.java)
+
+        preferences = PreferencesStore(context)
+        session = SecureSessionStore(context)
+        repository = SprintaRepository(database, api, session)
+    }
+}
+package za.co.sprinta.app
+
+// 1. ALL IMPORTS MUST BE AT THE VERY TOP
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.JointType
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MapStyleOptions
+import com.google.android.gms.maps.model.RoundCap
+import com.google.maps.android.compose.*
+import kotlinx.coroutines.launch
+import nl.dionsegijn.konfetti.compose.KonfettiView
+import nl.dionsegijn.konfetti.core.Party
+import nl.dionsegijn.konfetti.core.Position
+import nl.dionsegijn.konfetti.core.emitter.Emitter
+import za.co.sprinta.app.billing.SprintaBillingViewModel
+import za.co.sprinta.app.data.local.WorkoutEntity
+import za.co.sprinta.app.navigation.Screen as NavScreen
+import za.co.sprinta.app.service.TrackingService
+import za.co.sprinta.app.tracking.TrackingStore
+import za.co.sprinta.app.ui.BorderGray
+import za.co.sprinta.app.ui.PrimaryButton
+import za.co.sprinta.app.ui.SecondaryButton
+import za.co.sprinta.app.ui.SprintaBlack
+import za.co.sprinta.app.ui.SprintaDarkSurface
+import za.co.sprinta.app.ui.SprintaGold
+import za.co.sprinta.app.ui.SprintaTheme
+import za.co.sprinta.app.ui.SprintaWhite
+import za.co.sprinta.app.ui.SprintaTopAppBar
+import za.co.sprinta.app.ui.SprintaTextField
+import za.co.sprinta.app.ui.splash.VideoSplashScreen
+import za.co.sprinta.app.util.GeoUtils
+import za.co.sprinta.app.util.LocationUtils
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.TimeUnit
+
+// 2. MAIN ACTIVITY CLASS
+class MainActivity : AppCompatActivity() {
+    private val viewModel: MainViewModel by viewModels()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
+        super.onCreate(savedInstanceState)
+        class MainActivity : AppCompatActivity() {
+            private val viewModel: MainViewModel by viewModels()
+
+            override fun onCreate(savedInstanceState: Bundle?) {
+                installSplashScreen()
+                super.onCreate(savedInstanceState)
+
+                // Insert AdManager initialization here
+                za.co.sprinta.app.ads.AdManager.gatherConsentAndInitialize(this)
+
+                setContent {
+                    val prefs by viewModel.preferences.collectAsState()
+                    SprintaTheme(darkMode = prefs.darkMode) {
+                        SprintaApp(viewModel)
+                    }
+                }
+            }
+        }
+        setContent {
+            val prefs by viewModel.preferences.collectAsState()
+            SprintaTheme(darkMode = prefs.darkMode) {
+                SprintaApp(viewModel)
+            }
+        }
+    }
+}
+
+// 3. MAIN NAVIGATION SCAFFOLD WITH NAVCONTROLLER
+@Composable
+private fun SprintaApp(vm: MainViewModel) {
+    val navController = rememberNavController()
+    val session by vm.session.collectAsState()
+    val message by vm.message.collectAsState()
+    val records by vm.newRecords.collectAsState()
+    val snackbar = remember { SnackbarHostState() }
+
+    LaunchedEffect(message) {
+        message?.let {
+            snackbar.showSnackbar(it)
+            vm.clearMessage()
+        }
+    }
+
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+
+    val bottomBarRoutes = listOf(
+        NavScreen.Dashboard.route,
+        NavScreen.History.route,
+        NavScreen.Profile.route,
+        NavScreen.Settings.route
+    )
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
+        bottomBar = {
+            if (currentRoute in bottomBarRoutes) {
+                NavigationBar(
+                    containerColor = SprintaDarkSurface,
+                    contentColor = SprintaWhite
+                ) {
+                    NavigationBarItem(
+                        selected = currentRoute == NavScreen.Dashboard.route,
+                        onClick = {
+                            navController.navigate(NavScreen.Dashboard.route) {
+                                popUpTo(NavScreen.Dashboard.route) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        icon = { Icon(Icons.Default.Home, contentDescription = stringResource(R.string.dashboard)) },
+                        label = { Text(stringResource(R.string.dashboard)) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = SprintaBlack,
+                            indicatorColor = SprintaGold
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == NavScreen.History.route,
+                        onClick = {
+                            navController.navigate(NavScreen.History.route) {
+                                popUpTo(NavScreen.Dashboard.route) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        icon = { Icon(Icons.Default.History, contentDescription = stringResource(R.string.history)) },
+                        label = { Text(stringResource(R.string.history)) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = SprintaBlack,
+                            indicatorColor = SprintaGold
+                        )
+                    )
+                    // Center Prominent Record Item
+                    NavigationBarItem(
+                        selected = false,
+                        onClick = {
+                            navController.navigate(NavScreen.Tracking.route)
+                        },
+                        icon = {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(SprintaGold, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = "Record", tint = SprintaWhite)
+                            }
+                        },
+                        label = { Text("Record", color = SprintaGold, fontWeight = FontWeight.Bold) }
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == NavScreen.Profile.route,
+                        onClick = {
+                            navController.navigate(NavScreen.Profile.route) {
+                                popUpTo(NavScreen.Dashboard.route) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
+                        label = { Text("Profile") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = SprintaBlack,
+                            indicatorColor = SprintaGold
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == NavScreen.Settings.route,
+                        onClick = {
+                            navController.navigate(NavScreen.Settings.route) {
+                                popUpTo(NavScreen.Dashboard.route) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        icon = { Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings)) },
+                        label = { Text("More") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = SprintaBlack,
+                            indicatorColor = SprintaGold
+                        )
+                    )
+                }
+            }
+        }
+    ) { padding ->
+        NavHost(
+            navController = navController,
+            startDestination = NavScreen.Splash.route,
+            modifier = Modifier.padding(padding)
+        ) {
+            composable(NavScreen.Splash.route) {
+                VideoSplashScreen(
+                    onSplashComplete = {
+                        val destination = if (session != null) NavScreen.Dashboard.route else NavScreen.Auth.route
+                        navController.navigate(destination) {
+                            popUpTo(NavScreen.Splash.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
+            composable(NavScreen.Auth.route) {
+                AuthScreen(
+                    vm = vm,
+                    onAuthSuccess = {
+                        navController.navigate(NavScreen.Dashboard.route) {
+                            popUpTo(NavScreen.Auth.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
+            composable(NavScreen.Dashboard.route) {
+                DashboardScreen(
+                    vm = vm,
+                    onStartRunClick = { navController.navigate(NavScreen.Tracking.route) }
+                )
+            }
+            composable(NavScreen.History.route) {
+                HistoryScreen(vm = vm)
+            }
+            composable(NavScreen.Profile.route) {
+                za.co.sprinta.app.ui.profile.ProfileScreen(vm = vm)
+            }
+            composable(NavScreen.About.route) {
+                za.co.sprinta.app.ui.about.AboutScreen()
+            }
+            composable(NavScreen.Settings.route) {
+                val prefs by vm.preferences.collectAsState()
+                SettingsScreen(
+                    vm = vm,
+                    prefs = prefs,
+                    onUpgradeClick = { navController.navigate(NavScreen.ProUpgrade.route) },
+                    onLogoutClick = {
+                        vm.logout()
+                        navController.navigate(NavScreen.Auth.route) {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    }
+                )
+            }
+            composable(NavScreen.Tracking.route) {
+                TrackingScreen(
+                    vm = vm,
+                    navController = navController,
+                    onFinishRun = {
+                        navController.navigate(NavScreen.Summary.route) {
+                            popUpTo(NavScreen.Tracking.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
+            composable(NavScreen.Summary.route) {
+                SummaryScreen(
+                    vm = vm,
+                    onSaved = {
+                        navController.navigate(NavScreen.Dashboard.route) {
+                            popUpTo(NavScreen.Dashboard.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
+            composable(NavScreen.ProUpgrade.route) {
+                val billingViewModel: SprintaBillingViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+                ProUpgradeScreen(
+                    billingViewModel = billingViewModel,
+                    onBackClick = { navController.popBackStack() }
+                )
+            }
+        }
+    }
+
+    if (records.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = vm::resetRecordDialog,
+            title = { Text("New Personal Record!") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("SPRINTA detected a new personal best:")
+                    records.forEach { record ->
+                        AssistChip(onClick = {}, label = { Text("ðŸ† $record") })
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = vm::resetRecordDialog) { Text("OK") }
+            }
+        )
+    }
+}
+
+// 4. SCREENS
+@Composable
+private fun AuthScreen(
+    vm: MainViewModel,
+    onAuthSuccess: () -> Unit = {}
+) {
+    val registering by vm.isRegistering.collectAsState()
+    val busy by vm.busy.collectAsState()
+    val session by vm.session.collectAsState()
+
+    LaunchedEffect(session) {
+        if (session != null) {
+            onAuthSuccess()
+        }
+    }
+
+    var name by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+
+    var showForgotPasswordDialog by remember { mutableStateOf(false) }
+    var resetEmail by remember { mutableStateOf("") }
+
+    if (showForgotPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = { showForgotPasswordDialog = false },
+            title = {
+                Text(
+                    "Reset Password",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Enter your email address and we'll send you a password reset link.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    SprintaTextField(
+                        value = resetEmail,
+                        onValueChange = { resetEmail = it },
+                        label = stringResource(R.string.email)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showForgotPasswordDialog = false
+                        vm.resetPassword(resetEmail)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = SprintaGold, contentColor = SprintaWhite)
+                ) {
+                    Text("Send Reset Link", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { showForgotPasswordDialog = false },
+                    border = BorderStroke(1.dp, BorderGray)
+                ) {
+                    Text("Cancel", color = MaterialTheme.colorScheme.onBackground)
+                }
+            }
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp, vertical = 40.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.sprinta_flat_logo_transparent),
+            contentDescription = "SPRINTA Logo",
+            modifier = Modifier
+                .size(120.dp)
+                .align(Alignment.CenterHorizontally)
+                .padding(bottom = 16.dp)
+        )
+        Text(
+            stringResource(R.string.tagline),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .padding(bottom = 28.dp)
+        )
+
+        if (registering) {
+            SprintaTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = stringResource(R.string.name)
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+
+        SprintaTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = stringResource(R.string.email)
+        )
+        Spacer(Modifier.height(10.dp))
+        SprintaTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = stringResource(R.string.password),
+            visualTransformation = PasswordVisualTransformation()
+        )
+
+        if (registering) {
+            Spacer(Modifier.height(10.dp))
+            SprintaTextField(
+                value = confirm,
+                onValueChange = { confirm = it },
+                label = stringResource(R.string.confirm_password),
+                visualTransformation = PasswordVisualTransformation()
+            )
+        } else {
+            TextButton(
+                onClick = {
+                    resetEmail = email
+                    showForgotPasswordDialog = true
+                },
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text(
+                    "Forgot Password?",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = SprintaGold
+                )
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+        PrimaryButton(
+            text = if (registering) stringResource(R.string.create_account) else stringResource(R.string.login),
+            onClick = {
+                if (registering) vm.register(name, email, password, confirm)
+                else vm.login(email, password)
+            },
+            enabled = !busy
+        )
+
+        if (busy) {
+            Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(28.dp), color = SprintaGold)
+            }
+        }
+
+        TextButton(
+            onClick = { vm.setRegistering(!registering) },
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        ) {
+            Text(
+                if (registering) "Already have an account? ${stringResource(R.string.login)}" else stringResource(R.string.create_account),
+                color = SprintaGold,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun DashboardScreen(
+    vm: MainViewModel,
+    onStartRunClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val session by vm.session.collectAsState()
+    val workouts by vm.workouts.collectAsState()
+    val prefs by vm.preferences.collectAsState()
+    val name = session?.get("name") ?: "Runner"
+
+    val totalDistance = workouts.sumOf { it.distanceMeters }
+    val totalDuration = workouts.sumOf { it.durationSeconds }
+    val avgPace = GeoUtils.paceSecondsPerKm(totalDistance, totalDuration)
+    val record5k = workouts
+        .filter { it.distanceMeters >= 5_000 }
+        .minByOrNull { it.averagePaceSecondsPerKm }
+
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "SPRINTA",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = SprintaGold
+                    )
+                    Text(
+                        "Welcome, $name",
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+                Image(
+                    painter = painterResource(id = R.drawable.sprinta_logo),
+                    contentDescription = "SPRINTA Logo",
+                    modifier = Modifier.size(48.dp)
+                )
+            }
+        }
+
+        // Weekly Snapshot Section
+        item {
+            Text(
+                "WEEKLY SNAPSHOT",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                letterSpacing = 1.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "DISTANCE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SprintaBlack.copy(alpha = 0.6f)
+                        )
+                        Text(
+                            formatDistance(totalDistance, prefs.useMiles),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = SprintaBlack
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(32.dp)
+                            .background(BorderGray)
+                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "AVG PACE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SprintaBlack.copy(alpha = 0.6f)
+                        )
+                        Text(
+                            GeoUtils.formatPace(avgPace),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = SprintaBlack
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(32.dp)
+                            .background(BorderGray)
+                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "TIME",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SprintaBlack.copy(alpha = 0.6f)
+                        )
+                        Text(
+                            GeoUtils.formatDuration(totalDuration),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = SprintaBlack
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.EmojiEvents, null, tint = SprintaGold)
+                        Text(" Personal Records", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    }
+                    Text("1K: ${bestRecord(workouts, 1_000.0)?.let(GeoUtils::formatPace) ?: "No record yet"}", color = SprintaBlack)
+                    Text("5K: ${record5k?.let { GeoUtils.formatPace(it.averagePaceSecondsPerKm) } ?: "No record yet"}", color = SprintaBlack)
+                    Text("10K: ${bestRecord(workouts, 10_000.0)?.let(GeoUtils::formatPace) ?: "No record yet"}", color = SprintaBlack)
+                }
+            }
+        }
+
+        item {
+            PrimaryButton(
+                text = stringResource(R.string.start_run),
+                onClick = onStartRunClick
+            )
+        }
+
+        item {
+            Text(
+                stringResource(R.string.recent_workouts),
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+
+        if (workouts.isEmpty()) {
+            item { Text(stringResource(R.string.no_workouts), color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)) }
+        } else {
+            items(workouts.take(6), key = { it.workoutId }) { workout ->
+                WorkoutCard(workout, prefs.useMiles)
+            }
+        }
+        item { Spacer(Modifier.height(14.dp)) }
+    }
+}
+
+@Composable
+private fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
+    val workouts by vm.workouts.collectAsState()
+    val prefs by vm.preferences.collectAsState()
+    var showManualDialog by remember { mutableStateOf(false) }
+
+    if (showManualDialog) {
+        za.co.sprinta.app.ui.manual.ManualEntryDialog(
+            onDismiss = { showManualDialog = false },
+            onSave = { activityType, distanceKm, durationMins, dateIso, notes ->
+                vm.saveManualWorkout(activityType, distanceKm, durationMins, dateIso, notes)
+            }
+        )
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    Text("Workout History", style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold))
+                }
+                item {
+                    SecondaryButton(text = "Synchronise Pending Workouts", onClick = { vm.startSync() })
+                }
+                items(workouts, key = { it.workoutId }) { workout ->
+                    WorkoutCard(workout, prefs.useMiles)
+                }
+            }
+
+            za.co.sprinta.app.ui.AdSlotBanner(modifier = Modifier.padding(bottom = 16.dp))
+        }
+
+        FloatingActionButton(
+            onClick = { showManualDialog = true },
+            containerColor = SprintaGold,
+            contentColor = SprintaWhite,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(bottom = 70.dp, end = 20.dp)
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Add Manual Workout", tint = SprintaWhite)
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    vm: MainViewModel,
+    prefs: za.co.sprinta.app.prefs.AppPreferences,
+    onUpgradeClick: () -> Unit,
+    onLogoutClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showDeleteDialog by remember { mutableStateOf(false) }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = {
+                Text(
+                    "Delete Account?",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            },
+            text = {
+                Text(
+                    "Are you sure you want to permanently delete your SPRINTA account and saved workout data? This action cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteDialog = false
+                        vm.deleteAccount()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = SprintaWhite)
+                ) {
+                    Text("Delete Account", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { showDeleteDialog = false },
+                    border = BorderStroke(1.dp, BorderGray)
+                ) {
+                    Text("Cancel", color = MaterialTheme.colorScheme.onBackground)
+                }
+            }
+        )
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize().padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item { Text(stringResource(R.string.settings), style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)) }
+
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.language), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = prefs.language == "en",
+                            onClick = {
+                                vm.setLanguage("en")
+                                AppCompatDelegate.setApplicationLocales(androidx.core.os.LocaleListCompat.forLanguageTags("en"))
+                            },
+                            label = { Text("English") },
+                            leadingIcon = { Icon(Icons.Default.Language, null) }
+                        )
+                        FilterChip(
+                            selected = prefs.language == "af",
+                            onClick = {
+                                vm.setLanguage("af")
+                                AppCompatDelegate.setApplicationLocales(androidx.core.os.LocaleListCompat.forLanguageTags("af"))
+                            },
+                            label = { Text("Afrikaans") }
+                        )
+                        FilterChip(
+                            selected = prefs.language == "zu",
+                            onClick = {
+                                vm.setLanguage("zu")
+                                AppCompatDelegate.setApplicationLocales(androidx.core.os.LocaleListCompat.forLanguageTags("zu"))
+                            },
+                            label = { Text("isiZulu") }
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.units), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !prefs.useMiles, onClick = { vm.setUseMiles(false) }, label = { Text(stringResource(R.string.km)) })
+                        FilterChip(selected = prefs.useMiles, onClick = { vm.setUseMiles(true) }, label = { Text(stringResource(R.string.miles)) })
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.audio_updates), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = prefs.audioIntervalKm == 1, onClick = { vm.setAudioInterval(1) }, label = { Text(stringResource(R.string.every_1km)) })
+                        FilterChip(selected = prefs.audioIntervalKm == 2, onClick = { vm.setAudioInterval(2) }, label = { Text(stringResource(R.string.every_2km)) })
+                        FilterChip(selected = prefs.audioIntervalKm == 0, onClick = { vm.setAudioInterval(0) }, label = { Text(stringResource(R.string.off)) })
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.theme), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !prefs.darkMode, onClick = { vm.setDarkMode(false) }, label = { Text(stringResource(R.string.light)) }, leadingIcon = { Icon(Icons.Default.LightMode, null) })
+                        FilterChip(selected = prefs.darkMode, onClick = { vm.setDarkMode(true) }, label = { Text(stringResource(R.string.dark)) }, leadingIcon = { Icon(Icons.Default.DarkMode, null) })
+                    }
+                }
+            }
+        }
+
+        item {
+            PrimaryButton(text = "â­ Upgrade to SPRINTA Pro", onClick = onUpgradeClick)
+        }
+
+        item {
+            SecondaryButton(text = stringResource(R.string.logout), onClick = onLogoutClick)
+        }
+
+        item {
+            OutlinedButton(
+                onClick = { showDeleteDialog = true },
+                modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.DeleteForever, contentDescription = "Delete Account")
+                Spacer(Modifier.width(8.dp))
+                Text("Delete Account & Data", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        item { Text("SPRINTA â€¢ Open-Source Coding OPSC 6312", style = MaterialTheme.typography.labelMedium) }
+        item { Spacer(Modifier.height(18.dp)) }
+    }
+}
+
+@Composable
+private fun TrackingScreen(
+    vm: MainViewModel,
+    navController: NavHostController,
+    onFinishRun: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val serviceState by TrackingService.trackingState.collectAsState()
+    val storeState by vm.trackingState.collectAsState()
+    val prefs by vm.preferences.collectAsState()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var selectedActivityType by remember { mutableStateOf("RUN") }
+    var mapType by remember { mutableStateOf(MapType.NORMAL) }
+
+    var locationPermissionDenied by remember { mutableStateOf(false) }
+    var showBackConfirmDialog by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (granted) {
+            startLocationService(context)
+        } else {
+            locationPermissionDenied = true
+        }
+    }
+
+    val hasLocationPermission = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+
+    val coords = if (serviceState.routeCoordinates.isNotEmpty()) {
+        serviceState.routeCoordinates.map { LatLng(it.first, it.second) }
+    } else {
+        storeState.points.map { LatLng(it.latitude, it.longitude) }
+    }
+
+    val distanceMeters = if (serviceState.isTracking) serviceState.distanceMeters else storeState.distanceMeters
+    val durationSeconds = if (serviceState.isTracking) serviceState.durationSeconds else storeState.durationSeconds
+    val paceSecondsPerKm = if (serviceState.isTracking) serviceState.currentPaceSecondsPerKm else storeState.paceSecondsPerKm
+    val isTrackingActive = serviceState.isTracking || storeState.active
+
+    BackHandler(enabled = isTrackingActive) {
+        showBackConfirmDialog = true
+    }
+
+    if (showBackConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showBackConfirmDialog = false },
+            title = {
+                Text(
+                    "Active Activity in Progress",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            },
+            text = {
+                Text(
+                    "Your activity is currently being recorded. Do you want to keep recording in the background or finish?",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBackConfirmDialog = false
+                        navController.popBackStack(NavScreen.Dashboard.route, inclusive = false)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SprintaGold,
+                        contentColor = SprintaWhite
+                    )
+                ) {
+                    Text("Keep Recording", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = {
+                        showBackConfirmDialog = false
+                        stopLocationService(context)
+                        onFinishRun()
+                    },
+                    border = BorderStroke(1.dp, BorderGray)
+                ) {
+                    Text("Finish Activity", color = MaterialTheme.colorScheme.onBackground)
+                }
+            }
+        )
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        val initial = coords.lastOrNull() ?: LatLng(-33.9249, 18.4241)
+
+        val cameraPositionState = rememberCameraPositionState {
+            position = CameraPosition.fromLatLngZoom(initial, 17f)
+        }
+
+        LaunchedEffect(coords.lastOrNull()) {
+            coords.lastOrNull()?.let { lastLocation ->
+                cameraPositionState.animate(
+                    update = CameraUpdateFactory.newLatLng(lastLocation),
+                    durationMs = 1000
+                )
+            }
+        }
+
+        // Full Screen Map
+        GoogleMap(
+            modifier = Modifier.fillMaxSize(),
+            cameraPositionState = cameraPositionState,
+            properties = MapProperties(
+                isBuildingEnabled = false,
+                mapType = mapType,
+                mapStyleOptions = if (mapType == MapType.NORMAL) MapStyleOptions.loadRawResourceStyle(context, R.raw.map_style_dark) else null
+            )
+        ) {
+            if (coords.isNotEmpty()) {
+                Polyline(
+                    points = coords,
+                    color = SprintaGold,
+                    width = 14f,
+                    jointType = JointType.ROUND,
+                    startCap = RoundCap(),
+                    endCap = RoundCap()
+                )
+                val lastPoint = coords.last()
+                val markerState = rememberMarkerState(key = lastPoint.toString(), position = lastPoint)
+                Marker(state = markerState, title = "Current Position")
+            }
+        }
+
+        // Floating Glassmorphism HUD at Top
+        Card(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(16.dp)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, BorderGray),
+            colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface.copy(alpha = 0.9f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("TIME", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
+                    Text(
+                        LocationUtils.formatDuration(durationSeconds),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = SprintaWhite
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(30.dp)
+                        .background(BorderGray)
+                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("DISTANCE", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
+                    Text(
+                        formatDistance(distanceMeters, prefs.useMiles),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = SprintaWhite
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(30.dp)
+                        .background(BorderGray)
+                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("PACE", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
+                    Text(
+                        LocationUtils.formatPace(paceSecondsPerKm),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = SprintaWhite
+                    )
+                }
+            }
+        }
+
+        // Floating Action Buttons on Right
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            FloatingActionButton(
+                onClick = {
+                    mapType = if (mapType == MapType.NORMAL) MapType.SATELLITE else MapType.NORMAL
+                },
+                containerColor = SprintaDarkSurface,
+                contentColor = SprintaGold,
+                shape = CircleShape,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(Icons.Default.Layers, contentDescription = "Map Layers")
+            }
+
+            FloatingActionButton(
+                onClick = {
+                    coords.lastOrNull()?.let { lastLoc ->
+                        coroutineScope.launch {
+                            cameraPositionState.animate(CameraUpdateFactory.newLatLng(lastLoc))
+                        }
+                    }
+                },
+                containerColor = SprintaDarkSurface,
+                contentColor = SprintaGold,
+                shape = CircleShape,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(Icons.Default.MyLocation, contentDescription = "Recenter")
+            }
+        }
+
+        // Bottom Sheet Drawer & Controls
+        Card(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            border = BorderStroke(1.dp, BorderGray),
+            colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (locationPermissionDenied) {
+                    Text(
+                        stringResource(R.string.location_permission_required),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                if (!isTrackingActive) {
+                    // Activity Selection Chips
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        FilterChip(
+                            selected = selectedActivityType == "RUN",
+                            onClick = { selectedActivityType = "RUN" },
+                            label = { Text("ðŸƒâ€â™‚ï¸ Run") }
+                        )
+                        FilterChip(
+                            selected = selectedActivityType == "WALK",
+                            onClick = { selectedActivityType = "WALK" },
+                            label = { Text("ðŸš¶â€â™‚ï¸ Walk") }
+                        )
+                        FilterChip(
+                            selected = selectedActivityType == "WORKOUT",
+                            onClick = { selectedActivityType = "WORKOUT" },
+                            label = { Text("ðŸ‹ï¸â€â™‚ï¸ Workout") }
+                        )
+                    }
+
+                    // Circular Gold Start Button
+                    FloatingActionButton(
+                        onClick = {
+                            if (hasLocationPermission) {
+                                startLocationService(context)
+                            } else {
+                                permissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                                        *(if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray())
+                                    )
+                                )
+                            }
+                        },
+                        containerColor = SprintaGold,
+                        contentColor = SprintaWhite,
+                        shape = CircleShape,
+                        modifier = Modifier.size(72.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Start Activity", modifier = Modifier.size(36.dp))
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            stopLocationService(context)
+                            onFinishRun()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SprintaGold,
+                            contentColor = SprintaWhite
+                        )
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = "Stop", tint = SprintaWhite)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Stop Activity",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = SprintaWhite
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 5. SUMMARY SCREEN WITH CONFETTI ANIMATION
+@Composable
+private fun SummaryScreen(
+    vm: MainViewModel,
+    onSaved: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val state by vm.trackingState.collectAsState()
+    val prefs by vm.preferences.collectAsState()
+    val busy by vm.busy.collectAsState()
+    var notes by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val activity = context as android.app.Activity
+
+    val distanceStr = formatDistance(state.distanceMeters, prefs.useMiles)
+    val durationStr = GeoUtils.formatDuration(state.durationSeconds)
+    val paceStr = GeoUtils.formatPace(state.paceSecondsPerKm)
+
+    // Celebration Confetti Party with Gold, Black, and White
+    val party = remember {
+        Party(
+            speed = 0f,
+            maxSpeed = 30f,
+            damping = 0.9f,
+            spread = 360,
+            colors = listOf(0xFFD8B154.toInt(), 0xFF111111.toInt(), 0xFFFFFFFF.toInt()),
+            position = Position.Relative(0.5, 0.25),
+            emitter = Emitter(duration = 100, TimeUnit.MILLISECONDS).max(300)
+        )
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                stringResource(R.string.run_summary),
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, BorderGray),
+                colors = CardDefaults.cardColors(containerColor = SprintaWhite),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("DISTANCE", style = MaterialTheme.typography.labelSmall, color = SprintaBlack.copy(alpha = 0.6f))
+                        Text(distanceStr, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("TIME", style = MaterialTheme.typography.labelSmall, color = SprintaBlack.copy(alpha = 0.6f))
+                        Text(durationStr, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("PACE", style = MaterialTheme.typography.labelSmall, color = SprintaBlack.copy(alpha = 0.6f))
+                        Text(paceStr, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
+                    }
+                }
+            }
+
+            SprintaTextField(
+                value = notes,
+                onValueChange = { notes = it },
+                label = stringResource(R.string.notes),
+                singleLine = false
+            )
+
+            ShareRunButton(
+                distance = distanceStr,
+                duration = durationStr,
+                pace = paceStr,
+                context = context
+            )
+
+            PrimaryButton(
+                text = stringResource(R.string.save_sync),
+                onClick = {
+                    vm.saveCurrentWorkout(notes)
+                    za.co.sprinta.app.ads.AdManager.showInterstitialIfReady(activity) {
+                        onSaved()
+                    }
+                },
+                enabled = !busy
+            )
+        }
+
+        KonfettiView(
+            parties = listOf(party),
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+}
+
+// 6. COMPONENTS & UPGRADE SCREEN
+@Composable
+private fun WorkoutCard(workout: WorkoutEntity, useMiles: Boolean) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, BorderGray),
+        colors = CardDefaults.cardColors(containerColor = SprintaWhite)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    formatDate(workout.startTimeIso),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = SprintaBlack,
+                    modifier = Modifier.weight(1f)
+                )
+                AssistChip(onClick = {}, label = { Text(if (workout.isSynced) "Synced" else "Pending") })
+            }
+            Text(formatDistance(workout.distanceMeters, useMiles), color = SprintaBlack, style = MaterialTheme.typography.bodyMedium)
+            Text(GeoUtils.formatDuration(workout.durationSeconds), color = SprintaBlack.copy(alpha = 0.8f))
+            Text(GeoUtils.formatPace(workout.averagePaceSecondsPerKm), color = SprintaBlack.copy(alpha = 0.8f))
+            if (workout.notes.isNotBlank()) Text(workout.notes, color = SprintaBlack.copy(alpha = 0.7f))
+        }
+    }
+}
+
+@Composable
+private fun Metric(name: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.padding(horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(name, style = MaterialTheme.typography.labelMedium)
+        Text(value, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+    }
+}
+
+@Composable
+fun ShareRunButton(
+    distance: String,
+    duration: String,
+    pace: String,
+    context: android.content.Context
+) {
+    val graphicsLayer = rememberGraphicsLayer()
+    val scope = rememberCoroutineScope()
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .padding(16.dp)
+                .drawWithContent {
+                    graphicsLayer.record {
+                        this@drawWithContent.drawContent()
+                    }
+                    drawLayer(graphicsLayer)
+                }
+                .background(MaterialTheme.colorScheme.background, RoundedCornerShape(16.dp))
+                .padding(24.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Image(
+                    painter = painterResource(id = R.drawable.sprinta_logo),
+                    contentDescription = null,
+                    modifier = Modifier.size(64.dp)
+                )
+                Text("JUST CRUSHED IT ON SPRINTA", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Metric("Distance", distance)
+                    Metric("Time", duration)
+                    Metric("Pace", pace)
+                }
+            }
+        }
+
+        SecondaryButton(text = "Share to Instagram / WhatsApp", onClick = {
+            scope.launch {
+                val bitmap = graphicsLayer.toImageBitmap().asAndroidBitmap()
+                shareBitmap(context, bitmap)
+            }
+        })
+    }
+}
+
+@Composable
+fun ProUpgradeScreen(
+    billingViewModel: SprintaBillingViewModel,
+    onBackClick: () -> Unit
+) {
+    val isProUser by billingViewModel.isProUser.collectAsState()
+    val productDetails by billingViewModel.proProductDetails.collectAsState()
+    val context = LocalContext.current as Activity
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        if (isProUser) {
+            Text(
+                "You are a SPRINTA Pro Member!",
+                color = SprintaGold,
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold)
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            SecondaryButton(text = "Back", onClick = onBackClick)
+        } else {
+            Text(
+                "Unlock SPRINTA Pro",
+                color = SprintaGold,
+                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "â€¢ Advanced Pace Analytics\nâ€¢ Marathon Training Plans\nâ€¢ Ad-Free Experience",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Button(
+                onClick = { billingViewModel.launchBillingFlow(context) },
+                enabled = productDetails != null,
+                colors = ButtonDefaults.buttonColors(containerColor = SprintaGold, contentColor = SprintaWhite),
+                shape = CircleShape
+            ) {
+                val price = productDetails?.subscriptionOfferDetails?.getOrNull(0)?.pricingPhases?.pricingPhaseList?.getOrNull(0)?.formattedPrice ?: "Loading..."
+                Text("Subscribe for $price / month", color = SprintaWhite, fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            SecondaryButton(text = "Back", onClick = onBackClick)
+        }
+    }
+}
+
+// 7. HELPER FUNCTIONS
+private fun bestRecord(workouts: List<WorkoutEntity>, distanceMeters: Double): Double? {
+    return workouts
+        .filter { it.distanceMeters >= distanceMeters }
+        .minByOrNull { it.averagePaceSecondsPerKm }
+        ?.averagePaceSecondsPerKm
+}
+
+private fun shareBitmap(context: android.content.Context, bitmap: Bitmap) {
+    try {
+        val cachePath = File(context.cacheDir, "images")
+        cachePath.mkdirs()
+        val stream = FileOutputStream("$cachePath/sprinta_run.png")
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        stream.close()
+
+        val imagePath = File(context.cacheDir, "images")
+        val newFile = File(imagePath, "sprinta_run.png")
+        val contentUri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", newFile)
+
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(Intent.EXTRA_STREAM, contentUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "Share your run"))
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
+
+private fun startLocationService(context: android.content.Context) {
+    val intent = Intent(context, TrackingService::class.java).apply {
+        action = TrackingService.ACTION_START
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+    else context.startService(intent)
+}
+
+private fun stopLocationService(context: android.content.Context) {
+    val intent = Intent(context, TrackingService::class.java).apply {
+        action = TrackingService.ACTION_STOP
+    }
+    context.startService(intent)
+}
+
+private fun formatDate(isoString: String): String {
+    return try {
+        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        val date = sdf.parse(isoString) ?: Date()
+        SimpleDateFormat("EEE, d MMM yyyy", Locale.US).format(date)
+    } catch (e: Exception) {
+        isoString
+    }
+}
+
+private fun formatDistance(meters: Double, miles: Boolean): String {
+    val value = if (miles) meters / 1609.344 else meters / 1000.0
+    return "%.2f %s".format(Locale.US, value, if (miles) "mi" else "km")
+}
+package za.co.sprinta.app
+
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import za.co.sprinta.app.data.local.WorkoutEntity
+import za.co.sprinta.app.model.RoutePoint
+import za.co.sprinta.app.prefs.AppPreferences
+import za.co.sprinta.app.tracking.TrackingStore
+import za.co.sprinta.app.util.GeoUtils
+import za.co.sprinta.app.util.PersonalRecordUtils
+import za.co.sprinta.app.util.Validators
+import za.co.sprinta.app.worker.SyncWorker
+import java.time.Instant
+import java.util.UUID
+
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+    enum class Screen { AUTH, DASHBOARD, TRACKING, SUMMARY, SETTINGS, HISTORY, PRO_UPGRADE }
+
+    private val repository = AppGraph.repository
+    private val gson = Gson()
+
+    private val _screen = MutableStateFlow(Screen.AUTH)
+    val screen: StateFlow<Screen> = _screen
+
+    private val _isRegistering = MutableStateFlow(false)
+    val isRegistering: StateFlow<Boolean> = _isRegistering
+
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy
+
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
+
+    private val _newRecords = MutableStateFlow<List<String>>(emptyList())
+    val newRecords: StateFlow<List<String>> = _newRecords
+
+    private val _session = MutableStateFlow(repository.currentSession())
+    val session: StateFlow<Map<String, String>?> = _session
+
+    val preferences: StateFlow<AppPreferences> = AppGraph.preferences.preferences
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppPreferences())
+
+    val trackingState = TrackingStore.state
+
+    val workouts: StateFlow<List<WorkoutEntity>> = _session
+        .map { it?.get("id") }
+        .flatMapLatest { userId ->
+            if (userId == null) flowOf(emptyList()) else repository.observeWorkouts(userId)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    init {
+        if (_session.value != null) {
+            _screen.value = Screen.DASHBOARD
+            SyncWorker.schedule(getApplication())
+        }
+    }
+
+    fun setRegistering(value: Boolean) {
+        _isRegistering.value = value
+        _message.value = null
+    }
+
+    fun clearMessage() {
+        _message.value = null
+    }
+
+    fun login(email: String, password: String) {
+        if (!Validators.isValidEmail(email)) {
+            _message.value = "Enter a valid email address."
+            return
+        }
+        if (password.isBlank()) {
+            _message.value = "Password is required."
+            return
+        }
+
+        viewModelScope.launch {
+            _busy.value = true
+            val result = repository.login(email, password)
+            _busy.value = false
+            val response = result.getOrNull()
+            if (response != null) {
+                repository.saveSession(response)
+                _session.value = repository.currentSession()
+                _screen.value = Screen.DASHBOARD
+                _message.value = null
+                SyncWorker.schedule(getApplication())
+                repository.refreshFromServer()
+            } else {
+                _message.value = if (result.exceptionOrNull()?.message?.contains("401") == true) {
+                    "Login failed. Please check your details."
+                } else {
+                    "Unable to connect to SPRINTA server."
+                }
+            }
+        }
+    }
+
+    fun register(name: String, email: String, password: String, confirmPassword: String) {
+        when {
+            name.isBlank() || email.isBlank() || password.isBlank() || confirmPassword.isBlank() -> {
+                _message.value = "Please complete all required fields."
+                return
+            }
+            !Validators.isValidEmail(email) -> {
+                _message.value = "Enter a valid email address."
+                return
+            }
+            !Validators.isValidPassword(password) -> {
+                _message.value = "Password must be at least 8 characters and include an uppercase letter, a number and a special character."
+                return
+            }
+            password != confirmPassword -> {
+                _message.value = "Passwords do not match."
+                return
+            }
+        }
+
+        viewModelScope.launch {
+            _busy.value = true
+            val result = repository.register(name, email, password)
+            _busy.value = false
+            val response = result.getOrNull()
+            if (response != null) {
+                repository.saveSession(response)
+                _session.value = repository.currentSession()
+                _screen.value = Screen.DASHBOARD
+                _isRegistering.value = false
+                _message.value = null
+                SyncWorker.schedule(getApplication())
+                repository.refreshFromServer()
+            } else {
+                _message.value = "Registration failed. The email may already exist."
+            }
+        }
+    }
+
+    fun logout() {
+        try {
+            com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+        } catch (_: Exception) {}
+        repository.clearSession()
+        _session.value = null
+        _screen.value = Screen.AUTH
+        TrackingStore.reset()
+    }
+
+    fun resetPassword(email: String) {
+        if (!Validators.isValidEmail(email)) {
+            _message.value = "Enter a valid email address."
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                com.google.firebase.auth.FirebaseAuth.getInstance().sendPasswordResetEmail(email.trim())
+                _message.value = "Password reset link sent to $email."
+            } catch (e: Exception) {
+                _message.value = "Password reset link sent to $email."
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    fun deleteAccount() {
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.delete()
+            } catch (_: Exception) {}
+            repository.clearSession()
+            _session.value = null
+            _screen.value = Screen.AUTH
+            TrackingStore.reset()
+            _busy.value = false
+            _message.value = "Your account has been deleted."
+        }
+    }
+
+    fun goTo(screen: Screen) {
+        _message.value = null
+        _screen.value = screen
+    }
+
+    fun saveManualWorkout(
+        activityType: String,
+        distanceKm: Double,
+        durationMinutes: Long,
+        dateIso: String,
+        notes: String
+    ) {
+        val userId = _session.value?.get("id") ?: return
+        if (distanceKm <= 0.0 && durationMinutes <= 0L) {
+            _message.value = "Please enter valid distance or duration."
+            return
+        }
+
+        viewModelScope.launch {
+            _busy.value = true
+            val distanceMeters = distanceKm * 1000.0
+            val durationSeconds = durationMinutes * 60L
+            val pace = GeoUtils.paceSecondsPerKm(distanceMeters, durationSeconds)
+
+            val entity = WorkoutEntity(
+                workoutId = UUID.randomUUID().toString(),
+                userId = userId,
+                distanceMeters = distanceMeters,
+                durationSeconds = durationSeconds,
+                averagePaceSecondsPerKm = pace,
+                startTimeIso = dateIso,
+                totalElevation = 0.0,
+                notes = notes.trim(),
+                routePointsJson = "[]",
+                activityType = activityType
+            )
+            val records = repository.saveWorkout(entity)
+            _newRecords.value = records
+            _busy.value = false
+            SyncWorker.schedule(getApplication())
+            _message.value = "Manual workout saved."
+        }
+    }
+
+    fun saveCurrentWorkout(notes: String) {
+        val userId = _session.value?.get("id") ?: return
+        val state = TrackingStore.state.value
+        if (state.points.size < 2 || state.distanceMeters <= 0.0) {
+            _message.value = "Move a little further before saving your workout."
+            return
+        }
+
+        viewModelScope.launch {
+            _busy.value = true
+            val entity = WorkoutEntity(
+                workoutId = UUID.randomUUID().toString(),
+                userId = userId,
+                distanceMeters = state.distanceMeters,
+                durationSeconds = state.durationSeconds,
+                averagePaceSecondsPerKm = state.paceSecondsPerKm,
+                startTimeIso = Instant.ofEpochMilli(state.startTimeMillis).toString(),
+                totalElevation = state.totalElevation,
+                notes = notes.trim(),
+                routePointsJson = gson.toJson(state.points)
+            )
+            val records = repository.saveWorkout(entity)
+            _newRecords.value = records
+            _busy.value = false
+            SyncWorker.schedule(getApplication())
+            _message.value = "Workout saved."
+            _screen.value = Screen.DASHBOARD
+            TrackingStore.reset()
+        }
+    }
+
+    fun resetRecordDialog() {
+        _newRecords.value = emptyList()
+    }
+
+    fun setDarkMode(value: Boolean) {
+        viewModelScope.launch { AppGraph.preferences.setDarkMode(value) }
+    }
+
+    fun setUseMiles(value: Boolean) {
+        viewModelScope.launch { AppGraph.preferences.setUseMiles(value) }
+    }
+
+    fun setAudioInterval(value: Int) {
+        viewModelScope.launch { AppGraph.preferences.setAudioInterval(value) }
+    }
+
+    fun setLanguage(value: String) {
+        viewModelScope.launch { AppGraph.preferences.setLanguage(value) }
+    }
+
+    fun startSync() {
+        SyncWorker.schedule(getApplication())
+        _message.value = "Sync queued."
+    }
+}
+package za.co.sprinta.app
+
+import android.app.Application
+
+class SprintaApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        AppGraph.init(this)
+    }
+}
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/sprinta_black" />
+</shape>
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/sprinta_black" />
+    <foreground android:drawable="@drawable/sprinta_app_icon_2048" />
+</adaptive-icon>
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/sprinta_black" />
+    <foreground android:drawable="@drawable/sprinta_app_icon_2048" />
+</adaptive-icon>
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="sprinta_gold">#D8B154</color>
+    <color name="sprinta_black">#111111</color>
+    <color name="sprinta_white">#FFFFFF</color>
+</resources>
+<resources>
+    <string name="app_name">SPRINTA</string>
+    <string name="tagline">Track Every Stride, Anywhere.</string>
+    <string name="login">Log In</string>
+    <string name="register">Register</string>
+    <string name="create_account">Create Account</string>
+    <string name="email">Email</string>
+    <string name="password">Password</string>
+    <string name="name">Name</string>
+    <string name="confirm_password">Confirm Password</string>
+    <string name="start_run">Start Run</string>
+    <string name="settings">Settings</string>
+    <string name="history">History</string>
+    <string name="dashboard">Dashboard</string>
+    <string name="distance">Distance</string>
+    <string name="pace">Pace</string>
+    <string name="time">Time</string>
+    <string name="stop">Stop</string>
+    <string name="pause">Pause</string>
+    <string name="save_sync">Save &amp; Sync Workout</string>
+    <string name="total_distance">Total Distance</string>
+    <string name="average_pace">Average Pace</string>
+    <string name="personal_records">Personal Records</string>
+    <string name="language">Language</string>
+    <string name="units">Distance Units</string>
+    <string name="audio_updates">Audio Pace Updates</string>
+    <string name="theme">Theme</string>
+    <string name="light">Light</string>
+    <string name="dark">Dark</string>
+    <string name="logout">Log Out</string>
+    <string name="english">English</string>
+    <string name="afrikaans">Afrikaans</string>
+    <string name="isizulu">isiZulu</string>
+    <string name="km">Kilometres</string>
+    <string name="miles">Miles</string>
+    <string name="every_1km">Every 1 km</string>
+    <string name="every_2km">Every 2 km</string>
+    <string name="off">Off</string>
+    <string name="recent_workouts">Recent Workouts</string>
+    <string name="new_personal_record">New Personal Record!</string>
+    <string name="no_workouts">No workouts yet. Start your first run.</string>
+    <string name="location_permission_required">Location permission is required to track a run.</string>
+    <string name="network_saved_locally">No connection. Workout saved locally and will sync automatically.</string>
+    <string name="sync_complete">Workout synchronised successfully.</string>
+    <string name="login_failed">Login failed. Please check your details.</string>
+    <string name="server_error">Server error. Please try again.</string>
+    <string name="invalid_email">Enter a valid email address.</string>
+    <string name="invalid_password">Password must be at least 8 characters and include an uppercase letter, a number and a special character.</string>
+    <string name="password_mismatch">Passwords do not match.</string>
+    <string name="required_fields">Please complete all required fields.</string>
+    <string name="registration_failed">Registration failed. The email may already exist.</string>
+    <string name="saved">Workout saved.</string>
+    <string name="allow_location">Allow Location &amp; Start</string>
+    <string name="notes">Notes</string>
+    <string name="run_summary">Workout Summary</string>
+    <string name="one_km">1 KM</string>
+    <string name="five_km">5 KM</string>
+    <string name="ten_km">10 KM</string>
+    <string name="record_not_available">No record yet</string>
+</resources>
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Sprinta" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#111111</item>
+        <item name="android:navigationBarColor">#111111</item>
+    </style>
+
+    <style name="Theme.Sprinta.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#FFFFFF</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/sprinta_flat_logo_transparent</item>
+        <item name="postSplashScreenTheme">@style/Theme.Sprinta</item>
+    </style>
+</resources>
+<resources>
+    <string name="app_name">SPRINTA</string>
+    <string name="tagline">Volg Elke Tree, Enige Plek.</string>
+    <string name="login">Teken In</string>
+    <string name="register">Registreer</string>
+    <string name="create_account">Skep Rekening</string>
+    <string name="email">E-pos</string>
+    <string name="password">Wagwoord</string>
+    <string name="name">Naam</string>
+    <string name="confirm_password">Bevestig Wagwoord</string>
+    <string name="start_run">Begin Hardloop</string>
+    <string name="settings">Instellings</string>
+    <string name="history">Geskiedenis</string>
+    <string name="dashboard">Paneel</string>
+    <string name="distance">Afstand</string>
+    <string name="pace">Tempo</string>
+    <string name="time">Tyd</string>
+    <string name="stop">Stop</string>
+    <string name="pause">Pouse</string>
+    <string name="save_sync">Stoor &amp; Sinkroniseer</string>
+    <string name="total_distance">Totale Afstand</string>
+    <string name="average_pace">Gemiddelde Tempo</string>
+    <string name="personal_records">Persoonlike Rekords</string>
+    <string name="language">Taal</string>
+    <string name="units">Afstandseenhede</string>
+    <string name="theme">Tema</string>
+    <string name="light">Lig</string>
+    <string name="dark">Donker</string>
+    <string name="logout">Teken Uit</string>
+    <string name="english">Engels</string>
+    <string name="afrikaans">Afrikaans</string>
+    <string name="isizulu">isiZulu</string>
+    <string name="km">Kilometer</string>
+    <string name="miles">Myl</string>
+    <string name="recent_workouts">Onlangse oefensessies</string>
+    <string name="new_personal_record">Nuwe Persoonlike Rekord!</string>
+    <string name="no_workouts">Geen oefensessies nie. Begin jou eerste hardloop.</string>
+    <string name="location_permission_required">Liggingstoestemming word benodig.</string>
+    <string name="invalid_email">Voer \'n geldige e-posadres in.</string>
+    <string name="invalid_password">Wagwoord moet minstens 8 karakters hÃª.</string>
+    <string name="password_mismatch">Wagwoorde stem nie ooreen nie.</string>
+    <string name="required_fields">Voltooi alle vereiste velde.</string>
+    <string name="registration_failed">Registrasie het misluk.</string>
+    <string name="saved">Oefensessie gestoor.</string>
+    <string name="allow_location">Laat Ligging Toe &amp; Begin</string>
+    <string name="notes">Notas</string>
+    <string name="run_summary">Oefensessie Opsomming</string>
+    <string name="one_km">1 KM</string>
+    <string name="five_km">5 KM</string>
+    <string name="ten_km">10 KM</string>
+    <string name="record_not_available">Nog geen rekord nie</string>
+    <string name="audio_updates">Klanktempo-opdaterings</string>
+    <string name="every_1km">Elke 1 km</string>
+    <string name="every_2km">Elke 2 km</string>
+    <string name="off">Af</string>
+</resources>
+<resources>
+    <string name="app_name">SPRINTA</string>
+    <string name="tagline">Landelela Zonke Izinyathelo, Nomaphi.</string>
+    <string name="login">Ngena</string>
+    <string name="register">Bhalisa</string>
+    <string name="create_account">Dala I-akhawunti</string>
+    <string name="email">I-imeyili</string>
+    <string name="password">Iphasiwedi</string>
+    <string name="name">Igama</string>
+    <string name="confirm_password">Qinisekisa Iphasiwedi</string>
+    <string name="start_run">Qala Ukugijima</string>
+    <string name="settings">Izilungiselelo</string>
+    <string name="history">Umlando</string>
+    <string name="dashboard">Ideshibhodi</string>
+    <string name="distance">Ibanga</string>
+    <string name="pace">Isivinini</string>
+    <string name="time">Isikhathi</string>
+    <string name="stop">Yima</string>
+    <string name="pause">Phumula</string>
+    <string name="save_sync">Gcina &amp; Vumelanisa</string>
+    <string name="total_distance">Ibanga Eliphelele</string>
+    <string name="average_pace">Isivinini Esimaphakathi</string>
+    <string name="personal_records">Amarekhodi Omuntu</string>
+    <string name="language">Ulimi</string>
+    <string name="units">Amayunithi Ebanga</string>
+    <string name="theme">Isihloko</string>
+    <string name="light">Ukukhanya</string>
+    <string name="dark">Okumnyama</string>
+    <string name="logout">Phuma</string>
+    <string name="english">IsiNgisi</string>
+    <string name="afrikaans">IsiBhunu</string>
+    <string name="isizulu">isiZulu</string>
+    <string name="km">Amakhilomitha</string>
+    <string name="miles">Amamayela</string>
+    <string name="recent_workouts">Ukuzivocavoca Kwakamuva</string>
+    <string name="new_personal_record">Irekhodi Elisha Lomuntu!</string>
+    <string name="no_workouts">Akukho ukuzivocavoca okwamanje. Qala ukugijima kwakho kokuqala.</string>
+    <string name="location_permission_required">Imvume yendawo iyadingeka.</string>
+    <string name="invalid_email">Faka i-imeyili evumelekile.</string>
+    <string name="invalid_password">Iphasiwedi kufanele ibe nezinhlamvu eziyi-8 okungenani.</string>
+    <string name="password_mismatch">Amaphasiwedi awafani.</string>
+    <string name="required_fields">Gcwalisa zonke izindawo ezidingekayo.</string>
+    <string name="registration_failed">Ukubhalisa kwehlulekile.</string>
+    <string name="saved">Ukuzivocavoca kugciniwe.</string>
+    <string name="allow_location">Vumela Indawo &amp; Qala</string>
+    <string name="notes">Amanothi</string>
+    <string name="run_summary">Isifinyezo Sokugijima</string>
+    <string name="one_km">1 KM</string>
+    <string name="five_km">5 KM</string>
+    <string name="ten_km">10 KM</string>
+    <string name="record_not_available">Alikho irekhodi okwamanje</string>
+    <string name="audio_updates">Izibuyekezo Zomsindo Wejubane</string>
+    <string name="every_1km">Njalo ngo-1 km</string>
+    <string name="every_2km">Njalo ngo-2 km</string>
+    <string name="off">Cishiwe</string>
+</resources>
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="shared_images" path="images/" />
+</paths>
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".SprintaApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="SPRINTA"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Sprinta.Starting">
+
+        <!-- Google Mobile Ads / AdMob Application ID (Official Sample Test ID) -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3940256099942544~3347511713" />
+
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.LocationTrackingService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <service
+            android:name=".service.TrackingService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- FileProvider configuration required for sharing run stats images to Instagram/WhatsApp -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+</manifest>
+package za.co.sprinta.app
+
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import za.co.sprinta.app.data.local.WorkoutEntity
+import za.co.sprinta.app.prefs.AppPreferences
+import za.co.sprinta.app.tracking.TrackingState
+
+class MainViewModel : ViewModel() {
+
+    // 1. NAVIGATION ROUTING
+    enum class Screen {
+        AUTH, DASHBOARD, HISTORY, SETTINGS, TRACKING, SUMMARY, PRO_UPGRADE
+    }
+
+    private val _screen = MutableStateFlow(Screen.AUTH)
+    val screen: StateFlow<Screen> = _screen
+
+    // 2. UI & SESSION STATE
+    val session = MutableStateFlow<Map<String, String>?>(null)
+    val preferences = MutableStateFlow(AppPreferences())
+    val message = MutableStateFlow<String?>(null)
+    val newRecords = MutableStateFlow<List<String>>(emptyList())
+    val isRegistering = MutableStateFlow(false)
+    val busy = MutableStateFlow(false)
+
+    // 3. WORKOUT & TRACKING DATA
+    val workouts = MutableStateFlow<List<WorkoutEntity>>(emptyList())
+    val trackingState = MutableStateFlow(TrackingState())
+
+    // 4. NAVIGATION METHODS
+    fun goTo(newScreen: Screen) { _screen.value = newScreen }
+
+    // 5. AUTHENTICATION METHODS
+    fun setRegistering(isReg: Boolean) { isRegistering.value = isReg }
+    fun register(name: String, email: String, pass: String, conf: String) { /* Add Firebase Auth logic */ }
+    fun login(email: String, pass: String) { /* Add Firebase Auth logic */ }
+    fun logout() { session.value = null; _screen.value = Screen.AUTH }
+
+    // 6. SETTINGS METHODS
+    fun setLanguage(lang: String) { /* Update AppPreferences */ }
+    fun setUseMiles(miles: Boolean) { /* Update AppPreferences */ }
+    fun setAudioInterval(interval: Int) { /* Update AppPreferences */ }
+    fun setDarkMode(dark: Boolean) { /* Update AppPreferences */ }
+
+    // 7. UTILITY METHODS
+    fun clearMessage() { message.value = null }
+    fun resetRecordDialog() { newRecords.value = emptyList() }
+    fun startSync() { /* Sync pending workouts to cloud */ }
+}

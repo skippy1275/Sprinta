@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Sprinta" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0F0F10</item>
+        <item name="android:navigationBarColor">#0F0F10</item>
+    </style>
+
+    <style name="Theme.Sprinta.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#0F0F10</item>
+        <item name="postSplashScreenTheme">@style/Theme.Sprinta</item>
+    </style>
+</resources>

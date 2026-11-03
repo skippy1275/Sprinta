@@ -1,0 +1,25 @@
+SPRINTA — GitHub commands
+
+# First upload
+git init
+git add .
+git commit -m "Initial SPRINTA POE Part 2 project"
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git push -u origin main
+
+# Progress commits
+git add .
+git commit -m "Implement SPRINTA authentication"
+git push
+
+git add .
+git commit -m "Add GPS tracking and offline synchronisation"
+git push
+
+# Final documentation/tests
+git add .
+git commit -m "Complete tests, GitHub Actions and README"
+git push
+
+Replace YOUR_USERNAME/YOUR_REPO with your own GitHub repository.

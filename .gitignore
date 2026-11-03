@@ -1,0 +1,17 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+/build/
+*/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Google / Firebase secrets
+google-services.json
+serviceAccountKey.json
+
+# OS files
+.DS_Store
+Thumbs.db
