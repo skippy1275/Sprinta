@@ -20,6 +20,7 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -543,13 +544,12 @@ private fun AuthScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center
             ) {
-                Icon(
-                    imageVector = Icons.Default.AccountCircle,
-                    contentDescription = "Google SSO",
-                    tint = SprintaGold,
+                Image(
+                    painter = painterResource(id = R.drawable.ic_google_logo),
+                    contentDescription = "Google Logo",
                     modifier = Modifier.size(22.dp)
                 )
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Sign in with Google",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -742,8 +742,65 @@ private fun DashboardScreen(
             }
         }
 
-        // Gear Tracker Card
+        // Dynamic Gear Tracker Card
         item {
+            val gearList by vm.gearList.collectAsState()
+            val activeGear = gearList.firstOrNull { it.isDefault } ?: gearList.firstOrNull()
+
+            var showAddShoeDialog by remember { mutableStateOf(false) }
+            var brandInput by remember { mutableStateOf("") }
+            var modelInput by remember { mutableStateOf("") }
+
+            if (showAddShoeDialog) {
+                AlertDialog(
+                    onDismissRequest = { showAddShoeDialog = false },
+                    title = {
+                        Text(
+                            text = "Add Running Shoe",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            SprintaTextField(
+                                value = brandInput,
+                                onValueChange = { brandInput = it },
+                                label = "Brand (e.g. Hoka, Nike, Adidas)"
+                            )
+                            SprintaTextField(
+                                value = modelInput,
+                                onValueChange = { modelInput = it },
+                                label = "Model (e.g. Clifton 9, Pegasus 40)"
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                if (brandInput.isNotBlank() && modelInput.isNotBlank()) {
+                                    vm.addCustomGear(brandInput, modelInput)
+                                    brandInput = ""
+                                    modelInput = ""
+                                    showAddShoeDialog = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SprintaGold, contentColor = SprintaWhite)
+                        ) {
+                            Text("Add Shoe", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = { showAddShoeDialog = false },
+                            border = BorderStroke(1.dp, BorderGray)
+                        ) {
+                            Text("Cancel", color = MaterialTheme.colorScheme.onBackground)
+                        }
+                    }
+                )
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -760,33 +817,47 @@ private fun DashboardScreen(
                             Icon(Icons.Default.DirectionsRun, contentDescription = "Gear", tint = SprintaGold)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "GEAR TRACKER",
+                                text = "MY GEAR",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = SprintaGold
                             )
                         }
-                        Text(
-                            text = "184 / 500 km",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = SprintaWhite.copy(alpha = 0.7f)
-                        )
+                        if (activeGear != null) {
+                            Text(
+                                text = "%.1f / %.0f km".format(activeGear.totalKm, activeGear.maxKm),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SprintaWhite.copy(alpha = 0.7f)
+                            )
+                        }
                     }
 
-                    Text(
-                        text = "Nike Air Zoom Pegasus 40",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = SprintaWhite
-                    )
-
-                    LinearProgressIndicator(
-                        progress = { 184f / 500f },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color = SprintaGold,
-                        trackColor = BorderGray
-                    )
+                    if (activeGear != null) {
+                        val progress = (activeGear.totalKm / activeGear.maxKm).toFloat().coerceIn(0f, 1f)
+                        Text(
+                            text = "${activeGear.brand} ${activeGear.model}",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = SprintaWhite
+                        )
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = SprintaGold,
+                            trackColor = BorderGray
+                        )
+                    } else {
+                        OutlinedButton(
+                            onClick = { showAddShoeDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, SprintaGold)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = SprintaGold)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Add Running Shoe", color = SprintaGold, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
         }
@@ -875,6 +946,8 @@ private fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
     val prefs by vm.preferences.collectAsState()
     var showManualDialog by remember { mutableStateOf(false) }
 
+    val unsyncedCount = workouts.count { !it.isSynced }
+
     if (showManualDialog) {
         za.co.sprinta.app.ui.manual.ManualEntryDialog(
             onDismiss = { showManualDialog = false },
@@ -884,37 +957,96 @@ private fun HistoryScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
         )
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { showManualDialog = true },
+                containerColor = SprintaGold,
+                contentColor = SprintaWhite,
+                shape = CircleShape
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add Manual Workout", tint = SprintaWhite)
+            }
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 item {
-                    Text("Workout History", style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold))
+                    Text(
+                        text = "WORKOUT HISTORY",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                        letterSpacing = 1.sp
+                    )
                 }
+
                 item {
-                    SecondaryButton(text = "Synchronise Pending Workouts", onClick = { vm.startSync() })
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 56.dp)
+                            .clickable { vm.startSync() },
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, BorderGray),
+                        colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (unsyncedCount > 0) "Synchronise $unsyncedCount Pending Workouts" else "All Workouts Synchronised",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = if (unsyncedCount > 0) SprintaGold else SprintaWhite
+                                )
+                                Text(
+                                    text = if (unsyncedCount > 0) "$unsyncedCount items pending cloud backup" else "Local database in sync with cloud",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = SprintaWhite.copy(alpha = 0.6f)
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "Sync",
+                                tint = SprintaGold,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
                 }
-                items(workouts, key = { it.workoutId }) { workout ->
-                    WorkoutCard(workout, prefs.useMiles)
+
+                if (workouts.isEmpty()) {
+                    item {
+                        Text(
+                            text = stringResource(R.string.no_workouts),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                            modifier = Modifier.padding(top = 16.dp)
+                        )
+                    }
+                } else {
+                    items(workouts, key = { it.workoutId }) { workout ->
+                        WorkoutCard(workout, prefs.useMiles)
+                    }
                 }
             }
 
-            za.co.sprinta.app.ui.AdSlotBanner(modifier = Modifier.padding(bottom = 16.dp))
-        }
-
-        FloatingActionButton(
-            onClick = { showManualDialog = true },
-            containerColor = SprintaGold,
-            contentColor = SprintaWhite,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(bottom = 70.dp, end = 20.dp)
-        ) {
-            Icon(Icons.Default.Add, contentDescription = "Add Manual Workout", tint = SprintaWhite)
+            za.co.sprinta.app.ui.AdSlotBanner(modifier = Modifier.padding(vertical = 8.dp))
         }
     }
 }
@@ -1299,17 +1431,38 @@ private fun TrackingScreen(
                         FilterChip(
                             selected = selectedActivityType == "RUN",
                             onClick = { selectedActivityType = "RUN" },
-                            label = { Text("🏃‍♂️ Run") }
+                            leadingIcon = {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_run),
+                                    contentDescription = "Run",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            label = { Text("Run", fontWeight = FontWeight.Bold) }
                         )
                         FilterChip(
                             selected = selectedActivityType == "WALK",
                             onClick = { selectedActivityType = "WALK" },
-                            label = { Text("🚶‍♂️ Walk") }
+                            leadingIcon = {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_walk),
+                                    contentDescription = "Walk",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            label = { Text("Walk", fontWeight = FontWeight.Bold) }
                         )
                         FilterChip(
                             selected = selectedActivityType == "WORKOUT",
                             onClick = { selectedActivityType = "WORKOUT" },
-                            label = { Text("🏋️‍♂️ Workout") }
+                            leadingIcon = {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_workout),
+                                    contentDescription = "Workout",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            label = { Text("Workout", fontWeight = FontWeight.Bold) }
                         )
                     }
 

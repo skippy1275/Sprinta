@@ -1,13 +1,17 @@
 package za.co.sprinta.app.ui.manual
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,9 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import za.co.sprinta.app.R
 import za.co.sprinta.app.ui.BorderGray
 import za.co.sprinta.app.ui.SprintaDarkSurface
 import za.co.sprinta.app.ui.SprintaGold
@@ -58,10 +64,12 @@ fun ManualEntryDialog(
     var notesText by remember { mutableStateOf("") }
 
     val activityOptions = listOf(
-        "RUN" to "🏃‍♂️ Run",
-        "WALK" to "🚶‍♂️ Walk",
-        "WORKOUT" to "🏋️‍♂️ Workout"
+        Triple("RUN", "Run", R.drawable.ic_run),
+        Triple("WALK", "Walk", R.drawable.ic_walk),
+        Triple("WORKOUT", "Workout", R.drawable.ic_workout)
     )
+
+    val currentSelectedOption = activityOptions.firstOrNull { it.first == selectedActivity } ?: activityOptions[0]
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -101,11 +109,19 @@ fun ManualEntryDialog(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                activityOptions.firstOrNull { it.first == selectedActivity }?.second ?: "🏃‍♂️ Run",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = SprintaWhite
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Image(
+                                    painter = painterResource(id = currentSelectedOption.third),
+                                    contentDescription = currentSelectedOption.second,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = currentSelectedOption.second,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = SprintaWhite
+                                )
+                            }
                             Icon(Icons.Default.ArrowDropDown, contentDescription = "Select", tint = SprintaGold)
                         }
                     }
@@ -114,9 +130,19 @@ fun ManualEntryDialog(
                         expanded = expandedDropdown,
                         onDismissRequest = { expandedDropdown = false }
                     ) {
-                        activityOptions.forEach { (type, label) ->
+                        activityOptions.forEach { (type, label, iconRes) ->
                             DropdownMenuItem(
-                                text = { Text(label) },
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Image(
+                                            painter = painterResource(id = iconRes),
+                                            contentDescription = label,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(label)
+                                    }
+                                },
                                 onClick = {
                                     selectedActivity = type
                                     expandedDropdown = false
