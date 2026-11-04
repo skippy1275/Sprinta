@@ -61,6 +61,9 @@ android {
 
 dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.android.gms:play-services-auth:21.0.0")

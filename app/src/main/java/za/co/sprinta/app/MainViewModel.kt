@@ -252,6 +252,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loginWithGoogleCredential(idToken: String) {
+        viewModelScope.launch {
+            _busy.value = true
+            val credential = com.google.firebase.auth.GoogleAuthProvider.getCredential(idToken, null)
+            com.google.firebase.auth.FirebaseAuth.getInstance().signInWithCredential(credential)
+                .addOnCompleteListener { task ->
+                    _busy.value = false
+                    if (task.isSuccessful) {
+                        val firebaseUser = task.result?.user
+                        if (firebaseUser != null) {
+                            val uid = firebaseUser.uid
+                            val name = firebaseUser.displayName ?: firebaseUser.email?.substringBefore('@') ?: "Athlete"
+                            val mail = firebaseUser.email ?: "athlete@sprinta.app"
+                            repository.saveUserSession(uid, name, mail, "firebase_token")
+                            _session.value = repository.currentSession()
+                            _screen.value = Screen.DASHBOARD
+                            _message.value = "Google Authentication Successful."
+                            SyncWorker.schedule(getApplication())
+                        }
+                    } else {
+                        val err = task.exception
+                        val userMsg = when (err) {
+                            is com.google.firebase.auth.FirebaseAuthInvalidCredentialsException -> "Google credentials invalid or expired."
+                            is com.google.firebase.FirebaseNetworkException -> "Network error during Google Sign-In."
+                            else -> err?.localizedMessage ?: "Google Sign-In failed."
+                        }
+                        _message.value = userMsg
+                    }
+                }
+        }
+    }
+
     fun login(email: String, password: String) {
         if (!Validators.isValidEmail(email)) {
             _message.value = "Enter a valid email address."
@@ -281,8 +313,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             SyncWorker.schedule(getApplication())
                         }
                     } else {
-                        val msg = task.exception?.localizedMessage ?: "Login failed. Please check your credentials."
-                        android.util.Log.e("SprintaAuth", "Login error: $msg", task.exception)
+                        val err = task.exception
+                        val msg = when (err) {
+                            is com.google.firebase.auth.FirebaseAuthInvalidCredentialsException -> "Invalid email or password. Please check your credentials."
+                            is com.google.firebase.auth.FirebaseAuthInvalidUserException -> "No user account found with this email."
+                            is com.google.firebase.FirebaseNetworkException -> "Network error. Please check your internet connection."
+                            else -> err?.localizedMessage ?: "Login failed. Please check your credentials."
+                        }
+                        android.util.Log.e("SprintaAuth", "Login error: $msg", err)
                         _message.value = msg
                     }
                 }

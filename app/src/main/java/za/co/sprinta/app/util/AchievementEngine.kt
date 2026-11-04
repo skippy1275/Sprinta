@@ -8,6 +8,7 @@ import java.time.ZoneId
 
 @Immutable
 data class Badge(
+
     val id: String,
     val title: String,
     val description: String,

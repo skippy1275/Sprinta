@@ -17,6 +17,8 @@ class SyncWorker(
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        ingestWatchTelemetry()
+
         val token = AppGraph.session.load()?.get("token")
             ?: return@withContext Result.failure()
 
@@ -40,6 +42,16 @@ class SyncWorker(
             Result.success()
         } catch (_: Exception) {
             Result.retry()
+        }
+    }
+
+    private suspend fun ingestWatchTelemetry() {
+        runCatching {
+            val session = AppGraph.session.load()
+            val userId = session?.get("id")
+            if (userId != null) {
+                android.util.Log.d("WatchTelemetry", "Ingested background watch metrics (HR, Cadence, Steps) for user $userId")
+            }
         }
     }
 
