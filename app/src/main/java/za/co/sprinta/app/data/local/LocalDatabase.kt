@@ -35,6 +35,17 @@ data class PersonalRecordEntity(
     val achievedAtIso: String
 )
 
+@Entity(tableName = "gear")
+data class GearEntity(
+    @PrimaryKey val shoeId: String,
+    val userId: String,
+    val brand: String,
+    val model: String,
+    val totalKm: Double = 0.0,
+    val maxKm: Double = 500.0,
+    val isDefault: Boolean = false
+)
+
 @Dao
 @JvmSuppressWildcards
 interface WorkoutDao {
@@ -64,12 +75,35 @@ interface PersonalRecordDao {
     suspend fun insertRecord(record: PersonalRecordEntity): Long
 }
 
+@Dao
+@JvmSuppressWildcards
+interface GearDao {
+    @Query("SELECT * FROM gear WHERE userId = :userId ORDER BY isDefault DESC")
+    fun observeGear(userId: String): Flow<List<GearEntity>>
+
+    @Query("SELECT * FROM gear WHERE userId = :userId AND isDefault = 1 LIMIT 1")
+    suspend fun getDefaultGear(userId: String): GearEntity?
+
+    @Query("UPDATE gear SET totalKm = totalKm + :addKm WHERE shoeId = :shoeId")
+    suspend fun incrementGearKm(shoeId: String, addKm: Double): Int
+
+    @Query("UPDATE gear SET isDefault = 0 WHERE userId = :userId")
+    suspend fun clearDefaultGear(userId: String): Int
+
+    @Query("UPDATE gear SET isDefault = 1 WHERE shoeId = :shoeId")
+    suspend fun setDefaultGear(shoeId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGear(gear: GearEntity): Long
+}
+
 @Database(
-    entities = [WorkoutEntity::class, PersonalRecordEntity::class],
-    version = 2,
+    entities = [WorkoutEntity::class, PersonalRecordEntity::class, GearEntity::class],
+    version = 3,
     exportSchema = false
 )
 abstract class SprintaDatabase : RoomDatabase() {
     abstract fun workoutDao(): WorkoutDao
     abstract fun personalRecordDao(): PersonalRecordDao
+    abstract fun gearDao(): GearDao
 }

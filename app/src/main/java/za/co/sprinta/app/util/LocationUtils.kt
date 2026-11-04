@@ -9,7 +9,7 @@ import kotlin.math.sqrt
 
 object LocationUtils {
     private const val EARTH_RADIUS_METERS = 6_371_000.0
-    private const val MAX_ACCURACY_METERS = 15.0f
+    private const val MAX_ACCURACY_METERS = 10.0f
     private const val MAX_SPEED_MPS = 15.0 // 54 km/h
 
     fun haversineDistanceMeters(

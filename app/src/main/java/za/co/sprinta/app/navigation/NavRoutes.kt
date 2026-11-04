@@ -15,4 +15,6 @@ sealed class Screen(val route: String) {
     data object Tracking : Screen("tracking")
     data object Summary : Screen("summary")
     data object ProUpgrade : Screen("pro_upgrade")
+    data object Gear : Screen("gear")
+    data object SmartWatch : Screen("smartwatch")
 }

@@ -302,6 +302,8 @@ private fun SprintaApp(vm: MainViewModel) {
                     prefs = prefs,
                     onEditProfileClick = { navController.navigate(NavScreen.EditProfile.route) },
                     onUpgradeClick = { navController.navigate(NavScreen.ProUpgrade.route) },
+                    onGearClick = { navController.navigate(NavScreen.Gear.route) },
+                    onSmartWatchClick = { navController.navigate(NavScreen.SmartWatch.route) },
                     onAboutClick = { navController.navigate(NavScreen.About.route) },
                     onLogoutClick = {
                         vm.logout()
@@ -309,6 +311,17 @@ private fun SprintaApp(vm: MainViewModel) {
                             popUpTo(0) { inclusive = true }
                         }
                     }
+                )
+            }
+            composable(NavScreen.Gear.route) {
+                za.co.sprinta.app.ui.gear.GearManagementScreen(
+                    vm = vm,
+                    onBackClick = { navController.popBackStack() }
+                )
+            }
+            composable(NavScreen.SmartWatch.route) {
+                za.co.sprinta.app.ui.watch.SmartWatchConnectScreen(
+                    onBackClick = { navController.popBackStack() }
                 )
             }
             composable(NavScreen.Tracking.route) {
@@ -510,6 +523,40 @@ private fun AuthScreen(
             },
             enabled = !busy
         )
+
+        Spacer(Modifier.height(10.dp))
+
+        OutlinedButton(
+            onClick = { vm.signInWithGoogle() },
+            enabled = !busy,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = CircleShape,
+            border = BorderStroke(1.dp, BorderGray),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = SprintaDarkSurface,
+                contentColor = SprintaWhite
+            )
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AccountCircle,
+                    contentDescription = "Google SSO",
+                    tint = SprintaGold,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Sign in with Google",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = SprintaWhite
+                )
+            }
+        }
 
         if (busy) {
             Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
@@ -1039,6 +1086,7 @@ private fun SettingsScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TrackingScreen(
     vm: MainViewModel,
@@ -1057,6 +1105,8 @@ private fun TrackingScreen(
 
     var locationPermissionDenied by remember { mutableStateOf(false) }
     var showBackConfirmDialog by remember { mutableStateOf(false) }
+
+    val scaffoldState = rememberBottomSheetScaffoldState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -1139,164 +1189,82 @@ private fun TrackingScreen(
         )
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        val initial = coords.lastOrNull() ?: LatLng(-33.9249, 18.4241)
-
-        val cameraPositionState = rememberCameraPositionState {
-            position = CameraPosition.fromLatLngZoom(initial, 17f)
-        }
-
-        LaunchedEffect(coords.lastOrNull()) {
-            coords.lastOrNull()?.let { lastLocation ->
-                cameraPositionState.animate(
-                    update = CameraUpdateFactory.newLatLng(lastLocation),
-                    durationMs = 1000
-                )
-            }
-        }
-
-        // Full Screen Map
-        GoogleMap(
-            modifier = Modifier.fillMaxSize(),
-            cameraPositionState = cameraPositionState,
-            properties = MapProperties(
-                isBuildingEnabled = false,
-                mapType = mapType,
-                mapStyleOptions = if (mapType == MapType.NORMAL) MapStyleOptions.loadRawResourceStyle(context, R.raw.map_style_dark) else null
-            )
-        ) {
-            if (coords.isNotEmpty()) {
-                Polyline(
-                    points = coords,
-                    color = SprintaGold,
-                    width = 14f,
-                    jointType = JointType.ROUND,
-                    startCap = RoundCap(),
-                    endCap = RoundCap()
-                )
-                val lastPoint = coords.last()
-                val markerState = rememberMarkerState(key = lastPoint.toString(), position = lastPoint)
-                Marker(state = markerState, title = "Current Position")
-            }
-        }
-
-        // Floating Glassmorphism HUD at Top Center with Massive Bold Tabular Metrics
-        Card(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(16.dp)
-                .fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            border = BorderStroke(1.dp, BorderGray),
-            colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface.copy(alpha = 0.95f))
-        ) {
-            Row(
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetPeekHeight = 220.dp,
+        sheetContainerColor = SprintaDarkSurface.copy(alpha = 0.95f),
+        sheetContentColor = SprintaWhite,
+        sheetShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        sheetDragHandle = {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        LocationUtils.formatDuration(durationSeconds),
-                        style = MaterialTheme.typography.displayMedium.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFeatureSettings = "tnum"
-                        ),
-                        color = SprintaWhite
-                    )
-                    Text("TIME", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
-                }
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .height(48.dp)
-                        .background(BorderGray)
-                )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        formatDistance(distanceMeters, prefs.useMiles),
-                        style = MaterialTheme.typography.displayMedium.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFeatureSettings = "tnum"
-                        ),
-                        color = SprintaWhite
-                    )
-                    Text("DISTANCE", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
-                }
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .height(48.dp)
-                        .background(BorderGray)
-                )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        LocationUtils.formatPace(paceSecondsPerKm),
-                        style = MaterialTheme.typography.displayMedium.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFeatureSettings = "tnum"
-                        ),
-                        color = SprintaWhite
-                    )
-                    Text("PACE", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
-                }
-            }
-        }
-
-        // Floating Action Buttons on Right
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            FloatingActionButton(
-                onClick = {
-                    mapType = if (mapType == MapType.NORMAL) MapType.SATELLITE else MapType.NORMAL
-                },
-                containerColor = SprintaDarkSurface,
-                contentColor = SprintaGold,
-                shape = CircleShape,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(Icons.Default.Layers, contentDescription = "Map Layers")
-            }
-
-            FloatingActionButton(
-                onClick = {
-                    coords.lastOrNull()?.let { lastLoc ->
-                        coroutineScope.launch {
-                            cameraPositionState.animate(CameraUpdateFactory.newLatLng(lastLoc))
-                        }
-                    }
-                },
-                containerColor = SprintaDarkSurface,
-                contentColor = SprintaGold,
-                shape = CircleShape,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(Icons.Default.MyLocation, contentDescription = "Recenter")
-            }
-        }
-
-        // Glassmorphism Bottom Sheet
-        Card(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            border = BorderStroke(1.dp, BorderGray),
-            colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface.copy(alpha = 0.95f))
-        ) {
+                    .padding(vertical = 10.dp)
+                    .width(40.dp)
+                    .height(4.dp)
+                    .background(BorderGray, CircleShape)
+            )
+        },
+        sheetContent = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp),
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                // Live Stats Metrics Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            LocationUtils.formatDuration(durationSeconds),
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFeatureSettings = "tnum"
+                            ),
+                            color = SprintaWhite
+                        )
+                        Text("TIME", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(36.dp)
+                            .background(BorderGray)
+                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            formatDistance(distanceMeters, prefs.useMiles),
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFeatureSettings = "tnum"
+                            ),
+                            color = SprintaGold
+                        )
+                        Text("DISTANCE", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(36.dp)
+                            .background(BorderGray)
+                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            LocationUtils.formatPace(paceSecondsPerKm),
+                            style = MaterialTheme.typography.headlineMedium.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFeatureSettings = "tnum"
+                            ),
+                            color = SprintaWhite
+                        )
+                        Text("PACE", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
+                    }
+                }
+
                 // GPS Indicator Row
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1324,7 +1292,6 @@ private fun TrackingScreen(
                 }
 
                 if (!isTrackingActive) {
-                    // Activity Selection Chips
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly
@@ -1346,7 +1313,6 @@ private fun TrackingScreen(
                         )
                     }
 
-                    // Massive Circular Gold Start Button (80.dp)
                     FloatingActionButton(
                         onClick = {
                             if (hasLocationPermission) {
@@ -1391,6 +1357,101 @@ private fun TrackingScreen(
                             color = SprintaWhite
                         )
                     }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        },
+        modifier = modifier.fillMaxSize()
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            val initial = coords.lastOrNull() ?: LatLng(-33.9249, 18.4241)
+
+            val cameraPositionState = rememberCameraPositionState {
+                position = CameraPosition.fromLatLngZoom(initial, 17f)
+            }
+
+            LaunchedEffect(coords.lastOrNull()) {
+                coords.lastOrNull()?.let { lastLocation ->
+                    cameraPositionState.animate(
+                        update = CameraUpdateFactory.newLatLng(lastLocation),
+                        durationMs = 1000
+                    )
+                }
+            }
+
+            // Full Screen Map Background with Brand-Strict Speed-Gradient Polyline
+            GoogleMap(
+                modifier = Modifier.fillMaxSize(),
+                cameraPositionState = cameraPositionState,
+                properties = MapProperties(
+                    isBuildingEnabled = false,
+                    mapType = mapType,
+                    mapStyleOptions = if (mapType == MapType.NORMAL) MapStyleOptions.loadRawResourceStyle(context, R.raw.map_style_dark) else null
+                )
+            ) {
+                if (coords.size >= 2) {
+                    for (i in 0 until coords.size - 1) {
+                        val p1 = coords[i]
+                        val p2 = coords[i + 1]
+                        val dist = LocationUtils.haversineDistanceMeters(p1.latitude, p1.longitude, p2.latitude, p2.longitude)
+                        val isFast = dist > 2.0
+                        Polyline(
+                            points = listOf(p1, p2),
+                            color = if (isFast) SprintaGold else SprintaGold.copy(alpha = 0.5f),
+                            width = if (isFast) 16f else 10f,
+                            jointType = JointType.ROUND,
+                            startCap = RoundCap(),
+                            endCap = RoundCap()
+                        )
+                    }
+                    val lastPoint = coords.last()
+                    val markerState = rememberMarkerState(key = lastPoint.toString(), position = lastPoint)
+                    Marker(state = markerState, title = "Current Position")
+                } else if (coords.isNotEmpty()) {
+                    val lastPoint = coords.last()
+                    val markerState = rememberMarkerState(key = lastPoint.toString(), position = lastPoint)
+                    Marker(state = markerState, title = "Current Position")
+                }
+            }
+
+            // Floating Action Buttons on Right
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 16.dp, end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                FloatingActionButton(
+                    onClick = {
+                        mapType = if (mapType == MapType.NORMAL) MapType.SATELLITE else MapType.NORMAL
+                    },
+                    containerColor = SprintaDarkSurface,
+                    contentColor = SprintaGold,
+                    shape = CircleShape,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(Icons.Default.Layers, contentDescription = "Map Layers")
+                }
+
+                FloatingActionButton(
+                    onClick = {
+                        coords.lastOrNull()?.let { lastLoc ->
+                            coroutineScope.launch {
+                                cameraPositionState.animate(CameraUpdateFactory.newLatLng(lastLoc))
+                            }
+                        }
+                    },
+                    containerColor = SprintaDarkSurface,
+                    contentColor = SprintaGold,
+                    shape = CircleShape,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(Icons.Default.MyLocation, contentDescription = "Recenter")
                 }
             }
         }

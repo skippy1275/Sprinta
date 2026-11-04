@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -201,6 +202,59 @@ fun ProfileScreen(
                             ) {
                                 Text("Average Pace", color = SprintaWhite.copy(alpha = 0.7f))
                                 Text(GeoUtils.formatPace(avgPace), fontWeight = FontWeight.Bold, color = SprintaWhite)
+                            }
+                        }
+                    }
+                }
+
+                // Dynamic Trophy Cabinet
+                item {
+                    val badges by vm.badges.collectAsState()
+
+                    Text(
+                        text = "TROPHY CABINET",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                        letterSpacing = 1.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(badges, key = { it.id }) { badge ->
+                            Card(
+                                modifier = Modifier
+                                    .width(130.dp)
+                                    .height(130.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (badge.isUnlocked) SprintaGold else BorderGray
+                                ),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (badge.isUnlocked) SprintaDarkSurface else SprintaBlack
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Text(
+                                        text = badge.emoji,
+                                        fontSize = 32.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = badge.title,
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = if (badge.isUnlocked) SprintaGold else SprintaWhite.copy(alpha = 0.4f),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
                             }
                         }
                     }

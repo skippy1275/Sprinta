@@ -19,10 +19,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocationOn
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -73,6 +76,8 @@ fun SettingsScreen(
     prefs: AppPreferences,
     onEditProfileClick: () -> Unit = {},
     onUpgradeClick: () -> Unit = {},
+    onGearClick: () -> Unit = {},
+    onSmartWatchClick: () -> Unit = {},
     onAboutClick: () -> Unit = {},
     onLogoutClick: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -171,6 +176,18 @@ fun SettingsScreen(
             colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
         ) {
             Column {
+                SettingsClickableItem(
+                    title = "Gear & Shoe Tracker",
+                    subtitle = "Manage running shoe wear & mileage",
+                    icon = Icons.AutoMirrored.Filled.DirectionsRun,
+                    onClick = onGearClick
+                )
+                SettingsClickableItem(
+                    title = "Smart Watch Hardware",
+                    subtitle = "Link Garmin & Galaxy Watch telemetry",
+                    icon = Icons.Default.Watch,
+                    onClick = onSmartWatchClick
+                )
                 SettingsToggleItem(
                     title = "Auto-Pause",
                     subtitle = "Pause recording when you stop moving",

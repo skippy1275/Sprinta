@@ -94,11 +94,23 @@ class TrackingService : Service(), TextToSpeech.OnInitListener {
         startForegroundServiceNotification()
         TrackingStore.start()
         lastAnnouncedKm = 0
+
+        // Immediate Initial Position Seeding
+        try {
+            fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null && LocationUtils.isReliableLocation(loc, lastLocation)) {
+                    lastLocation = loc
+                    TrackingStore.addLocation(loc)
+                    updateTrackingState()
+                }
+            }
+        } catch (_: SecurityException) {}
+
         updateTrackingState()
 
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
-            .setMinUpdateIntervalMillis(1000L)
-            .setMinUpdateDistanceMeters(2.0f)
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+            .setMinUpdateIntervalMillis(500L)
+            .setMinUpdateDistanceMeters(0.5f)
             .build()
 
         try {

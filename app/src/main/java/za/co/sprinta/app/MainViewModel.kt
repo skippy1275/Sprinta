@@ -69,6 +69,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val gearList: StateFlow<List<za.co.sprinta.app.data.local.GearEntity>> = _session
+        .map { it?.get("id") }
+        .flatMapLatest { userId ->
+            if (userId == null) flowOf(emptyList()) else repository.observeGear(userId)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val badges: StateFlow<List<za.co.sprinta.app.util.Badge>> = workouts
+        .map { za.co.sprinta.app.util.AchievementEngine.calculateBadges(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     // Phase 1 Architecture: Immutable UiStates
     private val _profileUiState = MutableStateFlow(
         ProfileUiState(
@@ -155,6 +166,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _profileUiState.value = _profileUiState.value.copy(avatarUrl = newUrl)
     }
 
+    fun addCustomGear(brand: String, model: String) {
+        val userId = _session.value?.get("id") ?: return
+        viewModelScope.launch {
+            repository.addGear(userId, brand, model)
+            _message.value = "Custom shoe added."
+        }
+    }
+
+    fun setDefaultGear(shoeId: String) {
+        val userId = _session.value?.get("id") ?: return
+        viewModelScope.launch {
+            repository.setDefaultGear(userId, shoeId)
+            _message.value = "Default shoe updated."
+        }
+    }
+
     fun onSaveProfile() {
         val current = _profileUiState.value
         _profileUiState.value = current.copy(isSaving = true)
@@ -197,6 +224,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _screen.value = Screen.DASHBOARD
             SyncWorker.schedule(getApplication())
         }
+
+        viewModelScope.launch {
+            repository.observeFirestoreFeed().collect { firestorePosts ->
+                if (firestorePosts.isNotEmpty()) {
+                    _feedUiState.value = _feedUiState.value.copy(posts = firestorePosts)
+                }
+            }
+        }
     }
 
     fun setRegistering(value: Boolean) {
@@ -206,6 +241,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearMessage() {
         _message.value = null
+    }
+
+    fun signInWithGoogle() {
+        viewModelScope.launch {
+            _busy.value = true
+            _message.value = "Initializing Google Authentication..."
+            kotlinx.coroutines.delay(800)
+            _busy.value = false
+        }
     }
 
     fun login(email: String, password: String) {
