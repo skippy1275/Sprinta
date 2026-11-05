@@ -144,14 +144,10 @@ fun ProfileScreen(
                                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                                     color = SprintaWhite
                                 )
-                                Text(
-                                    text = email,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = SprintaWhite.copy(alpha = 0.6f)
-                                )
+                                val streakWeeks = remember(workouts) { za.co.sprinta.app.util.AchievementEngine.calculateStreakWeeks(workouts) }
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "⚡ 3-WEEK STREAK",
+                                    text = "⚡ $streakWeeks-WEEK STREAK",
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                     color = SprintaGold
                                 )

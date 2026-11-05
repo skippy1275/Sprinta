@@ -1328,6 +1328,41 @@ private fun SettingsScreen(
     }
 }
 
+/*
+ * GOOGLE MAPS API KEY VERIFICATION CHECKLIST:
+ * 1. Ensure `MAPS_API_KEY=AIzaSy...` is configured in `local.properties`.
+ * 2. Confirm the Maps SDK for Android is enabled in the Google Cloud Console.
+ * 3. Verify the package name `za.co.sprinta.app` and SHA-1 fingerprint are registered under restrictions.
+ */
+@Composable
+fun ActiveTimerDisplay(
+    elapsedSeconds: Long,
+    startTime: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = LocationUtils.formatDuration(elapsedSeconds),
+            style = MaterialTheme.typography.displayLarge.copy(
+                fontSize = 52.sp,
+                fontWeight = FontWeight.ExtraBold,
+                fontFeatureSettings = "tnum"
+            ),
+            color = SprintaWhite
+        )
+        if (startTime.isNotBlank()) {
+            Text(
+                text = "Started at $startTime",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = SprintaGold
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TrackingScreen(
@@ -1347,6 +1382,19 @@ private fun TrackingScreen(
 
     var locationPermissionDenied by remember { mutableStateOf(false) }
     var showBackConfirmDialog by remember { mutableStateOf(false) }
+    var activityStartTime by remember { mutableStateOf("") }
+
+    val isTrackingActive = serviceState.isTracking || storeState.active
+
+    LaunchedEffect(isTrackingActive) {
+        if (isTrackingActive && activityStartTime.isBlank()) {
+            val now = java.time.LocalTime.now()
+            val fmt = java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale.US)
+            activityStartTime = now.format(fmt)
+        } else if (!isTrackingActive) {
+            activityStartTime = ""
+        }
+    }
 
     val scaffoldState = rememberBottomSheetScaffoldState()
 
@@ -1379,7 +1427,6 @@ private fun TrackingScreen(
     val distanceMeters = if (serviceState.isTracking) serviceState.distanceMeters else storeState.distanceMeters
     val durationSeconds = if (serviceState.isTracking) serviceState.durationSeconds else storeState.durationSeconds
     val paceSecondsPerKm = if (serviceState.isTracking) serviceState.currentPaceSecondsPerKm else storeState.paceSecondsPerKm
-    val isTrackingActive = serviceState.isTracking || storeState.active
 
     BackHandler(enabled = isTrackingActive) {
         showBackConfirmDialog = true
@@ -1454,29 +1501,18 @@ private fun TrackingScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                // Strava-Style Active Timer Display
+                ActiveTimerDisplay(
+                    elapsedSeconds = durationSeconds,
+                    startTime = activityStartTime
+                )
+
                 // Live Stats Metrics Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            LocationUtils.formatDuration(durationSeconds),
-                            style = MaterialTheme.typography.headlineMedium.copy(
-                                fontWeight = FontWeight.ExtraBold,
-                                fontFeatureSettings = "tnum"
-                            ),
-                            color = SprintaWhite
-                        )
-                        Text("TIME", style = MaterialTheme.typography.labelSmall, color = SprintaWhite.copy(alpha = 0.6f))
-                    }
-                    Box(
-                        modifier = Modifier
-                            .width(1.dp)
-                            .height(36.dp)
-                            .background(BorderGray)
-                    )
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             formatDistance(distanceMeters, prefs.useMiles),
@@ -1653,6 +1689,7 @@ private fun TrackingScreen(
                 cameraPositionState = cameraPositionState,
                 properties = MapProperties(
                     isBuildingEnabled = false,
+                    isMyLocationEnabled = hasLocationPermission,
                     mapType = mapType,
                     mapStyleOptions = if (mapType == MapType.NORMAL) MapStyleOptions.loadRawResourceStyle(context, R.raw.map_style_dark) else null
                 )

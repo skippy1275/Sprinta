@@ -8,7 +8,6 @@ import java.time.ZoneId
 
 @Immutable
 data class Badge(
-
     val id: String,
     val title: String,
     val description: String,
@@ -19,9 +18,39 @@ data class Badge(
 
 object AchievementEngine {
 
+    fun calculateStreakWeeks(workouts: List<WorkoutEntity>): Int {
+        if (workouts.isEmpty()) return 0
+
+        val zoneId = ZoneId.systemDefault()
+        val weekFields = java.time.temporal.WeekFields.of(DayOfWeek.MONDAY, 1)
+        val now = java.time.ZonedDateTime.now(zoneId)
+
+        val workoutWeeks = workouts.mapNotNull { workout ->
+            runCatching {
+                val zdt = Instant.parse(workout.startTimeIso).atZone(zoneId)
+                Pair(zdt.year, zdt.get(weekFields.weekOfWeekBasedYear()))
+            }.getOrNull()
+        }.toSet()
+
+        var streak = 0
+        var checkTime = now
+        while (true) {
+            val yr = checkTime.year
+            val wk = checkTime.get(weekFields.weekOfWeekBasedYear())
+            if (workoutWeeks.contains(Pair(yr, wk))) {
+                streak++
+                checkTime = checkTime.minusWeeks(1)
+            } else {
+                break
+            }
+        }
+        return streak
+    }
+
     fun calculateBadges(workouts: List<WorkoutEntity>): List<Badge> {
         val totalDistanceMeters = workouts.sumOf { it.distanceMeters }
         val workoutCount = workouts.size
+        val streakWeeks = calculateStreakWeeks(workouts)
 
         val hasWeekendRun = workouts.any { workout ->
             runCatching {
@@ -49,9 +78,9 @@ object AchievementEngine {
             Badge(
                 id = "badge_consistency",
                 title = "Consistency King",
-                description = "Completed 3 or more athletic workouts.",
+                description = "3-week workout streak (Monday - Sunday).",
                 emoji = "⚡",
-                isUnlocked = workoutCount >= 3
+                isUnlocked = streakWeeks >= 3 || workoutCount >= 3
             ),
             Badge(
                 id = "badge_50k_club",

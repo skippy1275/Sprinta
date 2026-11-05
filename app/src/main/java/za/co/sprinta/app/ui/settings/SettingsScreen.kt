@@ -49,6 +49,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +84,8 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val session by vm.session.collectAsState()
+    val email = session?.get("email") ?: "athlete@sprinta.app"
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     var isAutoPauseEnabled by remember { mutableStateOf(true) }
@@ -154,7 +157,7 @@ fun SettingsScreen(
             Column {
                 SettingsClickableItem(
                     title = "Edit Profile",
-                    subtitle = "Name, bio & location",
+                    subtitle = "$email • Edit details & photo",
                     icon = Icons.Default.Person,
                     onClick = onEditProfileClick
                 )
