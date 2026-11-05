@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
@@ -42,6 +43,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -224,7 +226,46 @@ fun SettingsScreen(
             border = BorderStroke(1.dp, BorderGray),
             colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface)
         ) {
-            Column {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Application Language",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = SprintaWhite
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = prefs.language == "en",
+                        onClick = {
+                            vm.setLanguage("en")
+                            AppCompatDelegate.setApplicationLocales(
+                                androidx.core.os.LocaleListCompat.forLanguageTags("en")
+                            )
+                        },
+                        label = { Text("English") },
+                        leadingIcon = { Icon(Icons.Default.Language, null) }
+                    )
+                    FilterChip(
+                        selected = prefs.language == "af",
+                        onClick = {
+                            vm.setLanguage("af")
+                            AppCompatDelegate.setApplicationLocales(
+                                androidx.core.os.LocaleListCompat.forLanguageTags("af")
+                            )
+                        },
+                        label = { Text("Afrikaans") }
+                    )
+                    FilterChip(
+                        selected = prefs.language == "zu",
+                        onClick = {
+                            vm.setLanguage("zu")
+                            AppCompatDelegate.setApplicationLocales(
+                                androidx.core.os.LocaleListCompat.forLanguageTags("zu")
+                            )
+                        },
+                        label = { Text("isiZulu") }
+                    )
+                }
+
                 SettingsClickableItem(
                     title = "Distance Units",
                     subtitle = if (useMetric) "Kilometers (km)" else "Miles (mi)",
