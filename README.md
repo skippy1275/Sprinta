@@ -1,109 +1,61 @@
-# SPRINTA — OPSC 6312 POE Part 2
+SPRINTA - Athletic Tracking Platform
+Author: Darren Keanan Skippers
+Student Number: ST10455119
+Module: OPSC 6312 (Open Source Coding) - Final POE
 
-## Project
+Demonstration Video
+https://youtu.be/vWj6FzPf1Fw?si=EH9CcQ6gXJaFaiJO
 
-**Application:** SPRINTA  
-**Tagline:** Track Every Stride, Anywhere.  
-**Module:** Open-Source Coding — OPSC 6312  
-**Student:** Darren Keanan Skippers  
-**Qualification:** Diploma in Software Development
+Purpose of the App
+Sprinta is a high-performance athletic activity tracking platform designed for multi-sport GPS logging, offline telemetry synchronization, and personal record benchmarking. The purpose of this application is to provide runners and fitness enthusiasts with a robust, reliable tool to track their workouts accurately, even in areas without cellular reception. It bridges the gap between simple step-counters and complex, premium fitness applications.
 
-## Purpose
+Design Considerations:
 
-SPRINTA is a native Android running application developed in Kotlin. It allows runners to register and log in, configure application preferences, record outdoor runs using GPS, view route information, save workout data locally, synchronise completed workouts with a REST API, review workout history and detect personal records.
+Offline-First Architecture: Because runners often lose signal, Sprinta is designed to save all telemetry directly to a local Room (SQLite) database first.
 
-## Part 2 user-defined features
+MVVM Architecture: The codebase strictly separates concerns. The UI (Jetpack Compose) only observes state, while the MainViewModel handles logic and the SprintaRepository manages data routing.
 
-### User Defined Feature 1 — Real-Time GPS Tracking
+UI/UX: The app utilizes a strict Material Design 3 dark theme palette (SprintaBlack, SprintaDarkSurface, SprintaWhite, and SprintaGold) to ensure high contrast, readability in sunlight, and a premium aesthetic. Custom vector graphics were implemented to replace generic system emojis.
 
-SPRINTA uses the Android fused location provider and a foreground location service to collect route points, calculate distance, duration and average pace, and display the route on Google Maps.
+GitHub and GitHub Actions Utilization:
 
-### User Defined Feature 2 — Offline-First Synchronisation
+Version Control: Git and GitHub were utilized continuously throughout development to maintain a history of changes, allowing for safe refactoring of the GPS engine and UI.
 
-Workout data is stored in Room when the device is offline. The workout is marked as pending and Android WorkManager automatically attempts synchronisation when network connectivity is available.
+GitHub Actions: Automated testing and continuous integration (CI) workflows were set up using GitHub Actions to automatically build the Android application and run basic tests on every push to the main branch, ensuring that no breaking changes were introduced to the compilation process.
 
-### User Defined Feature 3 — Personal Records
+Final Tag: The final, stable version of this repository has been explicitly tagged as final PoE.
 
-SPRINTA evaluates completed workouts against existing 1 km, 5 km and 10 km records. A faster pace creates a new personal record and displays an achievement dialog.
+Release Notes: Updates Since Prototype
+This final version includes massive architectural and UI overhauls compared to the initial prototype:
 
-## Technology stack
+Innovative Feature - Dynamic Gear Tracking: Removed hardcoded shoes. Users can now add custom running shoes to a Room database, and the app automatically increments the shoe's mileage every time a run is saved.
 
-- Android Studio
-- Kotlin
-- Jetpack Compose + Material 3
-- Room / SQLite
-- WorkManager
-- Jetpack DataStore
-- Retrofit + OkHttp
-- Google Maps SDK
-- FusedLocationProviderClient
-- Node.js + Express
-- PostgreSQL
-- BCrypt password hashing
-- JWT authentication
-- GitHub
-- GitHub Actions
+Innovative Feature - Advanced GPS Kalman Filtering: Completely rewrote the location engine using the Fused Location Provider. Added mathematical algorithms to drop inaccurate coordinates (worse than 10m accuracy) and ignore impossible speeds to prevent route jitter.
 
-## Architecture
+Authentication Overhaul: Fixed a critical bug causing invalid credential crashes by sanitizing inputs. Fully implemented modern Google Single Sign-On (SSO) using the Android Credential Manager API.
 
-Android UI → ViewModel → Repository → Room / Retrofit → REST API → PostgreSQL
+Background Syncing: Implemented Android WorkManager to automatically detect when the user regains internet connection and sync pending local Room database workouts to the Firebase backend.
 
-GPS tracking runs through a foreground service. WorkManager handles deferred synchronisation. DataStore stores user preferences.
+Dynamic Weekly Goal: Added an interactive weekly goal setter to the dashboard that saves to AppPreferences and dynamically updates a progress bar.
 
-## Setup
+UI Polish: Fixed bottom navigation bar text wrapping, overhauled the tracking HUD to feature a massive timer (Strava-style), and corrected contrast issues on the Settings screen.
 
-### Android
+Preparation for Publishing
+As required for publication readiness, this repository contains:
 
-1. Open the repository root `SPRINTA_POE_PART2` in Android Studio.
-2. Create `local.properties` from `local.properties.example` inside the project root.
-3. Set `SPRINTA_API_BASE_URL` to the public HTTPS API URL.
-4. Set `MAPS_API_KEY` to a Google Maps API key.
-5. Sync Gradle.
-6. Run the app on an Android phone.
+A signed release .apk / .aab file (Located in the /release folder).
 
-### API
+High-resolution screenshots formatted for the Google Play Store (Located in the /assets/play_store folder).
 
-```bash
-cd api
-npm install
-cp .env.example .env
-npm start
-```
+AI Tools Usage & Citation:
+During the development of Sprinta, Artificial Intelligence tools (specifically Google Gemini) were utilized as an advanced consultation and pair-programming resource. AI was not used to blindly generate the application, but rather to accelerate boilerplate creation, debug complex SDK errors, and refine mathematical algorithms.
 
-Set `DATABASE_URL` and `JWT_SECRET` in `.env`.
+Debugging and Error Resolution: When implementing Firebase Authentication, I encountered persistent FirebaseAuthInvalidCredentials exceptions. I provided the error logs to the AI, which correctly identified that the Android software keyboard was appending trailing spaces to email inputs. The AI suggested the .trim() solution which immediately resolved the crash.
 
-## REST API
+Architectural Consultation: I conceptualized the need for an offline-first architecture to handle dropped signals. I consulted the AI on the best modern Android practices for this, and it guided me toward pairing a local Room (SQLite) database with the Android WorkManager API for background syncing. I used the AI to help scaffold the Room DAO (Data Access Object) queries and the WorkManager worker class constraints.
 
-- `GET /health`
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/runs/sync`
-- `GET /api/v1/runs/user/:userId`
+Mathematical Algorithms: To fix the GPS jitter (where the map polyline would zig-zag wildly), I requested the AI to help me write a spatial filtering algorithm. The AI provided the Haversine formula implementation in Kotlin to calculate speed between two coordinates and filter out impossible human velocities (e.g., > 54 km/h).
 
-## Security
+UI Generation: I utilized AI image generation tools to brainstorm the minimalist, line-art vector graphics used for the Run, Walk, and Workout icons. Furthermore, I used Gemini to help refactor my Jetpack Compose layouts, specifically asking it for the best modifiers to prevent text truncation in the NavigationBar.
 
-Passwords are validated before submission and BCrypt hashed before storage. JWT access tokens are stored in Android encrypted preferences. API access is performed over HTTPS in the deployed environment.
-
-## Testing
-
-The Android project contains unit tests for validation, distance calculation, pace calculation and personal-record detection. The Node.js API contains validation tests. GitHub Actions runs API tests, Android unit tests and an Android debug build on every push and pull request.
-
-## GitHub development
-
-The repository should show regular commits as development progresses. Recommended commit sequence includes authentication, settings, Room, API integration, GPS tracking, offline synchronisation, personal records, tests, GitHub Actions and documentation.
-
-## Screenshots
-
-Add actual screenshots from the physical-device demonstration to this section before final submission. Recommended evidence: Login/Register, Dashboard, Settings, Live GPS Tracking, Workout Summary, Offline Pending workout, Personal Record, GitHub Actions and PostgreSQL.
-
-## Demonstration video
-
-Add the final unlisted YouTube demonstration link here:
-
-`VIDEO_LINK_HERE`
-
-The demonstration should show the app running on a physical mobile phone, registration/login, settings, REST API/database data, GPS tracking, workout saving, offline mode, synchronisation, personal records, GitHub commits, automated tests and README documentation.
-
-## AI usage declaration
-
-Use the same declaration already included in POE Part 1, updated only so that it accurately describes the assistance used during Part 2. The declaration should remain truthful and should not claim work was independently created when AI assistance materially contributed.
+All generated code snippets were manually reviewed, adapted to fit the MVVM architecture of Sprinta, and tested on physical hardware.
