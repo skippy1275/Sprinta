@@ -76,11 +76,13 @@ fun SprintaProScreen(
             )
             Spacer(modifier = Modifier.height(24.dp))
             Text(
-                text = "• 100% Ad-Free Experience\n• Advanced Pace Analytics\n• Marathon & 10K Training Plans\n• Live Safety Beacon Track",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f)
+                text = "• Ad-Free Experience",
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onBackground
             )
             Spacer(modifier = Modifier.height(32.dp))
+
+            val price = productDetails?.subscriptionOfferDetails?.getOrNull(0)?.pricingPhases?.pricingPhaseList?.getOrNull(0)?.formattedPrice ?: "50 ZAR"
 
             Button(
                 onClick = {
@@ -91,13 +93,11 @@ fun SprintaProScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                enabled = productDetails != null,
                 colors = ButtonDefaults.buttonColors(containerColor = SprintaGold, contentColor = SprintaWhite),
                 shape = CircleShape
             ) {
-                val price = productDetails?.subscriptionOfferDetails?.getOrNull(0)?.pricingPhases?.pricingPhaseList?.getOrNull(0)?.formattedPrice ?: "Loading..."
                 Text(
-                    text = if (productDetails != null) "Subscribe for $price / month" else "Loading Play Store...",
+                    text = "Subscribe for $price / month",
                     color = SprintaWhite,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )

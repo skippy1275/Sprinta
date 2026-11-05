@@ -523,6 +523,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { AppGraph.preferences.setLanguage(value) }
     }
 
+    fun setWeeklyGoal(value: Float) {
+        viewModelScope.launch { AppGraph.preferences.setWeeklyGoal(value) }
+    }
+
     fun startSync() {
         SyncWorker.schedule(getApplication())
         _message.value = "Sync queued."

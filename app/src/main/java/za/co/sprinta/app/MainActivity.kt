@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -153,7 +154,15 @@ private fun SprintaApp(vm: MainViewModel) {
                             }
                         },
                         icon = { Icon(Icons.Default.Home, contentDescription = stringResource(R.string.dashboard)) },
-                        label = { Text(stringResource(R.string.dashboard)) },
+                        label = {
+                            Text(
+                                text = stringResource(R.string.dashboard),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 10.sp
+                            )
+                        },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = SprintaBlack,
                             selectedTextColor = SprintaGold,
@@ -172,7 +181,15 @@ private fun SprintaApp(vm: MainViewModel) {
                             }
                         },
                         icon = { Icon(Icons.Default.History, contentDescription = stringResource(R.string.history)) },
-                        label = { Text(stringResource(R.string.history)) },
+                        label = {
+                            Text(
+                                text = stringResource(R.string.history),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 10.sp
+                            )
+                        },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = SprintaBlack,
                             selectedTextColor = SprintaGold,
@@ -197,7 +214,17 @@ private fun SprintaApp(vm: MainViewModel) {
                                 Icon(Icons.Default.PlayArrow, contentDescription = "Record", tint = SprintaWhite)
                             }
                         },
-                        label = { Text("Record", color = SprintaGold, fontWeight = FontWeight.Bold) }
+                        label = {
+                            Text(
+                                text = "Record",
+                                color = SprintaGold,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 10.sp
+                            )
+                        }
                     )
                     NavigationBarItem(
                         selected = currentRoute == NavScreen.Profile.route,
@@ -209,7 +236,15 @@ private fun SprintaApp(vm: MainViewModel) {
                             }
                         },
                         icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
-                        label = { Text("Profile") },
+                        label = {
+                            Text(
+                                text = "Profile",
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 10.sp
+                            )
+                        },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = SprintaBlack,
                             selectedTextColor = SprintaGold,
@@ -228,7 +263,15 @@ private fun SprintaApp(vm: MainViewModel) {
                             }
                         },
                         icon = { Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings)) },
-                        label = { Text("More") },
+                        label = {
+                            Text(
+                                text = "More",
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 10.sp
+                            )
+                        },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = SprintaBlack,
                             selectedTextColor = SprintaGold,
@@ -699,8 +742,59 @@ private fun DashboardScreen(
             }
         }
 
-        // Weekly Goal Progress Card
+        // Weekly Goal Progress Card with Target Vector Icon & Edit Dialog
         item {
+            var showEditGoalDialog by remember { mutableStateOf(false) }
+            var goalInput by remember { mutableStateOf("") }
+
+            if (showEditGoalDialog) {
+                AlertDialog(
+                    onDismissRequest = { showEditGoalDialog = false },
+                    title = {
+                        Text(
+                            text = "Set Weekly Goal",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("Enter your target weekly distance in kilometers:")
+                            SprintaTextField(
+                                value = goalInput,
+                                onValueChange = { goalInput = it },
+                                label = "Target Distance (km)",
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                )
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val valKm = goalInput.toFloatOrNull()
+                                if (valKm != null && valKm > 0f) {
+                                    vm.setWeeklyGoal(valKm)
+                                    showEditGoalDialog = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SprintaGold, contentColor = SprintaWhite)
+                        ) {
+                            Text("Save Goal", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = { showEditGoalDialog = false },
+                            border = BorderStroke(1.dp, BorderGray)
+                        ) {
+                            Text("Cancel", color = MaterialTheme.colorScheme.onBackground)
+                        }
+                    }
+                )
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -709,7 +803,7 @@ private fun DashboardScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val currentKm = (totalDistance / 1000.0).toFloat()
-                    val goalKm = 20.0f
+                    val goalKm = prefs.weeklyGoalKm.coerceAtLeast(1.0f)
                     val progress = (currentKm / goalKm).coerceIn(0f, 1f)
 
                     Row(
@@ -717,16 +811,32 @@ private fun DashboardScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "WEEKLY GOAL",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = SprintaGold
-                        )
-                        Text(
-                            text = "%.1f / %.0f km".format(currentKm, goalKm),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                            color = SprintaWhite
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.TrackChanges, contentDescription = "Goal", tint = SprintaGold)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "WEEKLY GOAL",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = SprintaGold
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "%.1f / %.0f km".format(currentKm, goalKm),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                color = SprintaWhite
+                            )
+                            IconButton(
+                                onClick = {
+                                    goalInput = goalKm.toInt().toString()
+                                    showEditGoalDialog = true
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Edit Goal", tint = SprintaGold, modifier = Modifier.size(18.dp))
+                            }
+                        }
                     }
 
                     LinearProgressIndicator(
@@ -1824,25 +1934,28 @@ fun ProUpgradeScreen(
             SecondaryButton(text = "Back", onClick = onBackClick)
         } else {
             Text(
-                "Unlock SPRINTA Pro",
+                "Unlock Sprinta Pro",
                 color = SprintaGold,
                 style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold)
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                "• Advanced Pace Analytics\n• Marathon Training Plans\n• Ad-Free Experience",
-                style = MaterialTheme.typography.bodyLarge,
+                "• Ad-Free Experience",
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onBackground
             )
             Spacer(modifier = Modifier.height(32.dp))
 
+            val price = productDetails?.subscriptionOfferDetails?.getOrNull(0)?.pricingPhases?.pricingPhaseList?.getOrNull(0)?.formattedPrice ?: "50 ZAR"
+
             Button(
                 onClick = { billingViewModel.launchBillingFlow(context) },
-                enabled = productDetails != null,
                 colors = ButtonDefaults.buttonColors(containerColor = SprintaGold, contentColor = SprintaWhite),
-                shape = CircleShape
+                shape = CircleShape,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
             ) {
-                val price = productDetails?.subscriptionOfferDetails?.getOrNull(0)?.pricingPhases?.pricingPhaseList?.getOrNull(0)?.formattedPrice ?: "Loading..."
                 Text("Subscribe for $price / month", color = SprintaWhite, fontWeight = FontWeight.Bold)
             }
             Spacer(modifier = Modifier.height(16.dp))

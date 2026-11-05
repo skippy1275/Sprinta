@@ -3,6 +3,7 @@ package za.co.sprinta.app.prefs
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -17,7 +18,8 @@ data class AppPreferences(
     val darkMode: Boolean = false,
     val useMiles: Boolean = false,
     val audioIntervalKm: Int = 1,
-    val language: String = "en"
+    val language: String = "en",
+    val weeklyGoalKm: Float = 20.0f
 )
 
 class PreferencesStore(private val context: Context) {
@@ -25,13 +27,15 @@ class PreferencesStore(private val context: Context) {
     private val milesKey = booleanPreferencesKey("use_miles")
     private val audioKey = intPreferencesKey("audio_interval")
     private val languageKey = stringPreferencesKey("language")
+    private val goalKey = floatPreferencesKey("weekly_goal")
 
     val preferences: Flow<AppPreferences> = context.dataStore.data.map { p ->
         AppPreferences(
             darkMode = p[darkKey] ?: false,
             useMiles = p[milesKey] ?: false,
             audioIntervalKm = p[audioKey] ?: 1,
-            language = p[languageKey] ?: "en"
+            language = p[languageKey] ?: "en",
+            weeklyGoalKm = p[goalKey] ?: 20.0f
         )
     }
 
@@ -39,6 +43,7 @@ class PreferencesStore(private val context: Context) {
     suspend fun setUseMiles(value: Boolean) = context.dataStore.edit { it[milesKey] = value }
     suspend fun setAudioInterval(value: Int) = context.dataStore.edit { it[audioKey] = value }
     suspend fun setLanguage(value: String) = context.dataStore.edit { it[languageKey] = value }
+    suspend fun setWeeklyGoal(value: Float) = context.dataStore.edit { it[goalKey] = value }
 }
 
 class SecureSessionStore(context: Context) {
