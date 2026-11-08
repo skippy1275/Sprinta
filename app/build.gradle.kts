@@ -20,8 +20,8 @@ val apiBaseUrl = localProperties.getProperty(
 )
 val mapsApiKey = localProperties.getProperty(
     "MAPS_API_KEY",
-    "YOUR_GOOGLE_MAPS_API_KEY"
-)
+    "AIzaSyDSHUpo2rLu6PnmnFTFo6EnmvbZe3TlbNk"
+).trim()
 
 android {
     namespace = "za.co.sprinta.app"
@@ -35,7 +35,7 @@ android {
         versionName = "1.0"
 
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
-        manifestPlaceholders["DE:3C:89:DA:35:2F:A6:BA:84:96:3F:D7:45:ED:4B:88:7C:A1:99:2F"] = mapsApiKey
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
