@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">Sprinta</string>
+    <string name="workout_complete">Oefensessie Voltooi!</string>
     <string name="tagline">Volg Elke Tree, Enige Plek.</string>
     <string name="login">Teken In</string>
     <string name="register">Registreer</string>

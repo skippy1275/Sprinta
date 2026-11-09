@@ -21,6 +21,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -63,8 +65,10 @@ import com.google.android.gms.maps.model.RoundCap
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.launch
 import nl.dionsegijn.konfetti.compose.KonfettiView
+import nl.dionsegijn.konfetti.core.Angle
 import nl.dionsegijn.konfetti.core.Party
 import nl.dionsegijn.konfetti.core.Position
+import nl.dionsegijn.konfetti.core.Spread
 import nl.dionsegijn.konfetti.core.emitter.Emitter
 import za.co.sprinta.app.billing.SprintaBillingViewModel
 import za.co.sprinta.app.data.local.WorkoutEntity
@@ -1760,6 +1764,32 @@ private fun TrackingScreen(
 
 // 5. SUMMARY SCREEN WITH CONFETTI ANIMATION
 @Composable
+private fun SummaryStat(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = SprintaWhite.copy(alpha = 0.6f)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontWeight = FontWeight.ExtraBold,
+                fontFeatureSettings = "tnum"
+            ),
+            color = SprintaGold
+        )
+    }
+}
+
+@Composable
 private fun SummaryScreen(
     vm: MainViewModel,
     onSaved: () -> Unit = {},
@@ -1770,63 +1800,64 @@ private fun SummaryScreen(
     val busy by vm.busy.collectAsState()
     var notes by remember { mutableStateOf("") }
     val context = LocalContext.current
-    val activity = context as android.app.Activity
+    val activity = context as? android.app.Activity
 
     val distanceStr = formatDistance(state.distanceMeters, prefs.useMiles)
     val durationStr = GeoUtils.formatDuration(state.durationSeconds)
     val paceStr = GeoUtils.formatPace(state.paceSecondsPerKm)
 
-    // Celebration Confetti Party with Gold, Black, and White
     val party = remember {
         Party(
             speed = 0f,
             maxSpeed = 30f,
             damping = 0.9f,
-            spread = 360,
+            angle = Angle.TOP,
+            spread = Spread.ROUND,
             colors = listOf(0xFFD8B154.toInt(), 0xFF111111.toInt(), 0xFFFFFFFF.toInt()),
             position = Position.Relative(0.5, 0.25),
             emitter = Emitter(duration = 100, TimeUnit.MILLISECONDS).max(300)
         )
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
+                .padding(20.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            Image(
+                painter = painterResource(id = R.drawable.sprinta_flat_logo_transparent),
+                contentDescription = "Sprinta Logo",
+                modifier = Modifier.size(90.dp)
+            )
+
             Text(
-                stringResource(R.string.run_summary),
+                text = stringResource(R.string.workout_complete),
                 style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onBackground
+                color = SprintaGold
             )
 
             Card(
                 shape = RoundedCornerShape(18.dp),
                 border = BorderStroke(1.dp, BorderGray),
-                colors = CardDefaults.cardColors(containerColor = SprintaWhite),
+                colors = CardDefaults.cardColors(containerColor = SprintaDarkSurface),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("DISTANCE", style = MaterialTheme.typography.labelSmall, color = SprintaBlack.copy(alpha = 0.6f))
-                        Text(distanceStr, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("TIME", style = MaterialTheme.typography.labelSmall, color = SprintaBlack.copy(alpha = 0.6f))
-                        Text(durationStr, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("PACE", style = MaterialTheme.typography.labelSmall, color = SprintaBlack.copy(alpha = 0.6f))
-                        Text(paceStr, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = SprintaBlack)
-                    }
+                    SummaryStat(label = "DISTANCE", value = distanceStr)
+                    Box(modifier = Modifier.width(1.dp).height(36.dp).background(BorderGray))
+                    SummaryStat(label = "TIME", value = durationStr)
+                    Box(modifier = Modifier.width(1.dp).height(36.dp).background(BorderGray))
+                    SummaryStat(label = "PACE", value = paceStr)
                 }
             }
 
@@ -1848,7 +1879,11 @@ private fun SummaryScreen(
                 text = stringResource(R.string.save_sync),
                 onClick = {
                     vm.saveCurrentWorkout(notes)
-                    za.co.sprinta.app.ads.AdManager.showInterstitialIfReady(activity) {
+                    if (activity != null) {
+                        za.co.sprinta.app.ads.AdManager.showInterstitialIfReady(activity) {
+                            onSaved()
+                        }
+                    } else {
                         onSaved()
                     }
                 },

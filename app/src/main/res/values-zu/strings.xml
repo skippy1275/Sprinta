@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">Sprinta</string>
+    <string name="workout_complete">Ukuzivocavoca Kuphelile!</string>
     <string name="tagline">Landelela Zonke Izinyathelo, Nomaphi.</string>
     <string name="login">Ngena</string>
     <string name="register">Bhalisa</string>
